@@ -3,45 +3,72 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # 
 # Build:  docker build -t linkedin-bot .
-# Test:   docker run --rm -it --shm-size=1gb linkedin-bot
-# Run:    docker run -d --name linkedin-bot --shm-size=1gb -v $(pwd)/data:/app/data --env-file .env --restart unless-stopped linkedin-bot
+# Run:    docker run --env-file .env linkedin-bot
+#
+# For VPS deployment with persistent data:
+# docker run -d --name linkedin-bot \
+#   --env-file .env \
+#   -v $(pwd)/data:/app/data \
+#   --restart unless-stopped \
+#   linkedin-bot
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Use the official Puppeteer image (includes Chrome and all dependencies)
-FROM ghcr.io/puppeteer/puppeteer:23.11.1
+FROM node:20-slim
 
-# Switch to root for setup
-USER root
+# Install Chrome dependencies
+RUN apt-get update && apt-get install -y \
+    chromium \
+    chromium-sandbox \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    xdg-utils \
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set environment variables
+# Set Chrome path for Puppeteer
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-ENV CHROME_CRASHPAD_DISABLE=1
-ENV DISABLE_CRASHPAD=1
-ENV NODE_ENV=production
-ENV HEADLESS=true
-# Fix chrome_crashpad_handler error (Chrome 128+)
-ENV XDG_CONFIG_HOME=/tmp/.chromium
-ENV XDG_CACHE_HOME=/tmp/.chromium
 
 # Create app directory
 WORKDIR /app
+
+# Create non-root user for security
+RUN groupadd -r botuser && useradd -r -g botuser botuser
 
 # Copy package files
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --omit=dev
+RUN npm ci --only=production
 
 # Copy source code
 COPY src/ ./src/
 COPY .env.example ./
 
-# Create data directory with proper permissions
-RUN mkdir -p data && chown -R pptruser:pptruser /app
+# Create data directory
+RUN mkdir -p data && chown -R botuser:botuser /app
 
-# Switch to non-root user (pptruser is created by the puppeteer image)
-USER pptruser
+# Switch to non-root user
+USER botuser
+
+# Force headless mode in container
+ENV HEADLESS=true
+ENV NODE_ENV=production
 
 # Expose web dashboard port
 EXPOSE 3000
