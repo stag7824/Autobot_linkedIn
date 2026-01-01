@@ -6,6 +6,8 @@
  * @license MIT
  */
 
+import fs from 'fs';
+import path from 'path';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import config, { buildSearchUrl } from '../config/index.js';
@@ -1769,9 +1771,6 @@ export class LinkedInBot {
    * This is especially important in Docker environments where containers restart
    */
   async cleanupChromeLocks(sessionDir) {
-    const fs = await import('fs');
-    const path = await import('path');
-    
     const lockFiles = [
       'SingletonLock',
       'SingletonSocket',
@@ -1779,15 +1778,17 @@ export class LinkedInBot {
       '.org.chromium.Chromium.lock',
     ];
     
+    console.log('🧹 Cleaning up Chrome lock files...');
+    
     for (const lockFile of lockFiles) {
       const lockPath = path.join(sessionDir, lockFile);
       try {
         if (fs.existsSync(lockPath)) {
           fs.unlinkSync(lockPath);
-          console.log(`🧹 Removed stale lock: ${lockFile}`);
+          console.log(`   ✓ Removed: ${lockFile}`);
         }
       } catch (e) {
-        // Ignore errors - file might not exist or be inaccessible
+        console.log(`   ⚠️ Could not remove ${lockFile}: ${e.message}`);
       }
     }
   }
