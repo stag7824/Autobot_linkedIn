@@ -118,6 +118,9 @@ export class LinkedInBot {
     const sessionDir = config.bot.sessionPath || './data/session';
     console.log(`📁 Using session directory: ${sessionDir}`);
     
+    // Clean up stale Chrome lock files (fixes "profile in use" error in Docker)
+    await this.cleanupChromeLocks(sessionDir);
+    
     // Check if running in Docker (use system Chromium)
     const isDocker = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.DOCKER;
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
@@ -1758,6 +1761,34 @@ export class LinkedInBot {
       return this.sessionStats;
     } finally {
       await this.close();
+    }
+  }
+
+  /**
+   * Clean up stale Chrome lock files to fix "profile in use" errors
+   * This is especially important in Docker environments where containers restart
+   */
+  async cleanupChromeLocks(sessionDir) {
+    const fs = await import('fs');
+    const path = await import('path');
+    
+    const lockFiles = [
+      'SingletonLock',
+      'SingletonSocket',
+      'SingletonCookie',
+      '.org.chromium.Chromium.lock',
+    ];
+    
+    for (const lockFile of lockFiles) {
+      const lockPath = path.join(sessionDir, lockFile);
+      try {
+        if (fs.existsSync(lockPath)) {
+          fs.unlinkSync(lockPath);
+          console.log(`🧹 Removed stale lock: ${lockFile}`);
+        }
+      } catch (e) {
+        // Ignore errors - file might not exist or be inaccessible
+      }
     }
   }
 
