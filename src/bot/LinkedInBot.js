@@ -151,9 +151,21 @@ export class LinkedInBot {
         '--hide-scrollbars',
         '--mute-audio',
         '--metrics-recording-only',
+        // Disable crash reporting completely
+        '--disable-breakpad',
+        '--disable-crash-reporter',
+        '--disable-crashpad',
+        '--crash-dumps-dir=/tmp',
+        '--enable-features=NetworkService,NetworkServiceInProcess',
       ],
       // Ignore HTTPS errors (for some corporate proxies)
       ignoreHTTPSErrors: true,
+      // Disable crash dumps
+      env: {
+        ...process.env,
+        CHROME_CRASHPAD_DISABLE: '1',
+        DISABLE_CRASHPAD: '1',
+      },
     });
 
     this.page = await this.browser.newPage();
