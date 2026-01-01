@@ -155,6 +155,7 @@ export class LinkedInBot {
         '--disable-breakpad',
         '--disable-crash-reporter',
         '--disable-crashpad',
+        '--no-crashpad',
         '--crash-dumps-dir=/tmp',
         '--enable-features=NetworkService,NetworkServiceInProcess',
       ],
