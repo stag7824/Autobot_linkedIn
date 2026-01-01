@@ -3,11 +3,12 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # 
 # Build:  docker build -t linkedin-bot .
-# Run:    docker run --env-file .env linkedin-bot
+# Run:    docker run --env-file .env --shm-size=1gb linkedin-bot
 #
 # For VPS deployment with persistent data:
 # docker run -d --name linkedin-bot \
 #   --env-file .env \
+#   --shm-size=1gb \
 #   -v $(pwd)/data:/app/data \
 #   --restart unless-stopped \
 #   linkedin-bot
@@ -15,34 +16,46 @@
 
 FROM node:20-slim
 
-# Install Chrome dependencies
+# Install Chrome dependencies and Chromium
 RUN apt-get update && apt-get install -y \
     chromium \
-    chromium-sandbox \
     fonts-liberation \
+    fonts-noto-color-emoji \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
     libatspi2.0-0 \
+    libcairo2 \
     libcups2 \
     libdbus-1-3 \
     libdrm2 \
     libgbm1 \
+    libglib2.0-0 \
     libgtk-3-0 \
     libnspr4 \
     libnss3 \
+    libpango-1.0-0 \
+    libx11-6 \
+    libxcb1 \
     libxcomposite1 \
     libxdamage1 \
+    libxext6 \
     libxfixes3 \
     libxkbcommon0 \
     libxrandr2 \
+    libxshmfence1 \
     xdg-utils \
+    ca-certificates \
+    procps \
     --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/cache/apt/*
 
 # Set Chrome path for Puppeteer
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# Disable Chrome crash reporting (fixes crashpad error)
+ENV CHROME_CRASHPAD_DISABLE=1
 
 # Create app directory
 WORKDIR /app
@@ -54,13 +67,13 @@ RUN groupadd -r botuser && useradd -r -g botuser botuser
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy source code
 COPY src/ ./src/
 COPY .env.example ./
 
-# Create data directory
+# Create data directory with proper permissions
 RUN mkdir -p data && chown -R botuser:botuser /app
 
 # Switch to non-root user

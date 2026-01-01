@@ -118,8 +118,17 @@ export class LinkedInBot {
     const sessionDir = config.bot.sessionPath || './data/session';
     console.log(`📁 Using session directory: ${sessionDir}`);
     
+    // Check if running in Docker (use system Chromium)
+    const isDocker = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.DOCKER;
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+    
+    if (executablePath) {
+      console.log(`🐳 Docker mode: Using ${executablePath}`);
+    }
+    
     this.browser = await puppeteer.launch({
       headless: config.bot.headless ? 'new' : false,
+      executablePath: executablePath,
       defaultViewport: { width: 1280, height: 900 },
       userDataDir: sessionDir,
       args: [
@@ -129,7 +138,22 @@ export class LinkedInBot {
         '--disable-infobars',
         '--window-size=1280,900',
         '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--disable-translate',
+        '--hide-scrollbars',
+        '--mute-audio',
+        '--metrics-recording-only',
       ],
+      // Ignore HTTPS errors (for some corporate proxies)
+      ignoreHTTPSErrors: true,
     });
 
     this.page = await this.browser.newPage();
