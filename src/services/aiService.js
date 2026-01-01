@@ -275,6 +275,52 @@ INSTRUCTIONS:
 }
 
 /**
+ * Answer a checkbox question with a simple true/false
+ * @param {string} checkboxLabel - The label text of the checkbox
+ * @param {object} jobContext - Job context (title, company, description)
+ * @returns {Promise<string>} - "true" or "false"
+ */
+export async function answerCheckboxQuestion(checkboxLabel, jobContext = null) {
+  const userInfo = config.ai.userInfo || '';
+  
+  let prompt = `You are helping a job applicant decide whether to check a checkbox on a job application form.
+
+APPLICANT PROFILE:
+${userInfo.substring(0, 1000)}
+
+`;
+
+  if (jobContext) {
+    prompt += `JOB CONTEXT:
+- Position: ${jobContext.title || 'Unknown'}
+- Company: ${jobContext.company || 'Unknown'}
+
+`;
+  }
+
+  prompt += `CHECKBOX QUESTION/STATEMENT:
+"${checkboxLabel}"
+
+Based on the applicant's profile and the checkbox statement, should this checkbox be checked?
+
+IMPORTANT RULES:
+- If the statement asks about legal work authorization and the applicant has it, answer "true"
+- If the statement asks about visa sponsorship need and the applicant DOES need sponsorship, answer "true"
+- If the statement says "I do NOT require sponsorship" and the applicant DOES require sponsorship, answer "false"
+- If it's about agreeing to terms, answer "true"
+- If it's about following the company, answer "false" (user doesn't want to follow)
+- For work eligibility questions, be honest based on the profile
+- Only check boxes that truthfully apply to the applicant
+
+Respond with ONLY one word: "true" or "false"`;
+
+  const answer = await callAI(prompt);
+  const result = answer?.toLowerCase().trim() || 'false';
+  console.log(`🤖 Checkbox AI (${activeProvider}): "${checkboxLabel.substring(0, 40)}..." → ${result}`);
+  return result;
+}
+
+/**
  * Extract skills from job description for matching
  */
 export async function extractSkillsFromJob(jobDescription) {

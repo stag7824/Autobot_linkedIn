@@ -12,7 +12,8 @@ import config, { buildSearchUrl } from '../config/index.js';
 import stateManager from '../services/stateManager.js';
 import { 
   initializeAI, 
-  answerQuestion, 
+  answerQuestion,
+  answerCheckboxQuestion,
   getPresetAnswer,
   checkJobMatch,
   getAIStatus,
@@ -1122,15 +1123,64 @@ export class LinkedInBot {
           return '';
         }, checkbox);
         
+        const labelLower = (labelText || '').toLowerCase();
+        
+        // Handle "Follow" checkboxes - UNCHECK them if checked (user doesn't want to follow companies)
+        if (labelLower.includes('follow') && !labelLower.includes('up')) {
+          if (isChecked) {
+            // Uncheck the Follow checkbox
+            await this.page.evaluate(el => {
+              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, checkbox);
+            await randomSleep(200, 400);
+            
+            const unchecked = await this.page.evaluate(el => {
+              try {
+                const id = el.id;
+                if (id) {
+                  const label = document.querySelector(`label[for="${id}"]`);
+                  if (label) {
+                    label.click();
+                    return true;
+                  }
+                }
+                el.click();
+                return true;
+              } catch {
+                return false;
+              }
+            }, checkbox);
+            
+            if (unchecked) {
+              console.log(`   ❌ Unchecked Follow: "${labelText?.substring(0, 50)}"`);
+            }
+            await randomSleep(200, 400);
+          } else {
+            console.log(`   ⏭️ Follow already unchecked: "${labelText?.substring(0, 50)}"`);
+          }
+          continue;
+        }
+        
         if (!isChecked) {
-          // Skip "Follow" checkboxes - user doesn't want to follow companies
-          const labelLower = (labelText || '').toLowerCase();
-          if (labelLower.includes('follow') && !labelLower.includes('up')) {
-            console.log(`   ⏭️ Skipping Follow checkbox: "${labelText?.substring(0, 50)}"`);
+          // Use AI to decide whether to check this checkbox
+          let shouldCheck = false;
+          
+          try {
+            const jobContext = this.getJobContext();
+            const aiDecision = await answerCheckboxQuestion(labelText, jobContext);
+            shouldCheck = aiDecision.toLowerCase().trim() === 'true';
+            console.log(`   🤖 AI decision for "${labelText?.substring(0, 40)}...": ${shouldCheck ? 'CHECK' : 'SKIP'}`);
+          } catch (aiError) {
+            console.log(`   ⚠️ AI error, skipping checkbox: ${aiError.message}`);
+            shouldCheck = false;
+          }
+          
+          if (!shouldCheck) {
+            console.log(`   ⏭️ Skipping (AI said no): "${labelText?.substring(0, 50)}"`);
             continue;
           }
           
-          // Click unchecked checkbox - using JavaScript click for reliability
+          // Click the checkbox - using JavaScript click for reliability
           await this.page.evaluate(el => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }, checkbox);

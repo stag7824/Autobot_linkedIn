@@ -124,8 +124,8 @@ async function main() {
     console.log('\n✅ Dashboard ready! Click "Start Bot" to begin applying.');
     console.log(`   Open http://localhost:${config.web.port} in your browser.\n`);
     
-    // Keep the process alive - server is stored in webServer variable
-    return;
+    // Keep the process alive indefinitely - wait forever
+    await new Promise(() => {}); // Never resolves, keeps process alive
   }
   
   // If no web dashboard, run bot directly (CLI mode)
