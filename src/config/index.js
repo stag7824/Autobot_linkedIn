@@ -199,7 +199,7 @@ const config = {
   // ═══════════════════════════════════════════════════════════════════════════
   web: {
     enabled: parseBool(process.env.WEB_DASHBOARD_ENABLED, true),
-    port: parseInt(process.env.WEB_PORT, 3003),
+    port: parseInt(process.env.WEB_PORT, 3000),
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
