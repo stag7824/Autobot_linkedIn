@@ -206,22 +206,36 @@ async function callAI(prompt, retryCount = 0) {
 }
 
 /**
- * Answer a question using AI based on user profile
+ * Answer a question using AI based on user profile and job context
+ * @param {string} question - The question to answer
+ * @param {string[]|null} options - Optional list of answer choices
+ * @param {object} jobContext - Optional job context (title, company, description)
  */
-export async function answerQuestion(question, options = null) {
+export async function answerQuestion(question, options = null, jobContext = null) {
   if (!activeProvider) return null;
 
   const userProfile = getUserProfile();
+  
+  // Build job context section if available
+  let jobContextSection = '';
+  if (jobContext && (jobContext.description || jobContext.title)) {
+    jobContextSection = `
+JOB CONTEXT:
+- Job Title: ${jobContext.title || 'Unknown'}
+- Company: ${jobContext.company || 'Unknown'}
+- Job Description (excerpt): ${(jobContext.description || '').substring(0, 1500)}
+`;
+  }
   
   let prompt;
   
   if (options && options.length > 0) {
     prompt = `You are an intelligent AI assistant helping fill out a job application form.
-Based on the candidate's profile below, select the BEST answer from the given options.
+Based on the candidate's profile and the job they are applying for, select the BEST answer from the given options.
 
 CANDIDATE PROFILE:
 ${userProfile}
-
+${jobContextSection}
 QUESTION: ${question}
 
 OPTIONS:
@@ -230,25 +244,27 @@ ${options.map((opt, i) => `${i + 1}. ${opt}`).join('\n')}
 INSTRUCTIONS:
 - Return ONLY the exact text of the best option, nothing else.
 - Choose the option that best represents the candidate's qualifications.
+- Tailor your answer to match the job requirements if possible.
 - If unsure, choose the most positive/favorable option for the candidate.
 - Do NOT add any explanation or additional text.`;
   } else {
     prompt = `You are an intelligent AI assistant helping fill out a job application form.
-Answer the question concisely based on the candidate's profile.
+Answer the question concisely based on the candidate's profile and the job they are applying for.
 
 CANDIDATE PROFILE:
 ${userProfile}
-
+${jobContextSection}
 QUESTION: ${question}
 
 INSTRUCTIONS:
 1. If the question asks for **years of experience or a number**, return **only the number** (e.g., "3", "5").
 2. If it's a **Yes/No question**, return **only "Yes" or "No"**.
-3. If it requires a **short answer**, give a **single sentence**.
-4. If it requires a **detailed response**, keep it under 350 characters.
+3. If it requires a **short answer**, give a **single sentence** relevant to the job.
+4. If it requires a **detailed response** (cover letter, message), keep it under 350 characters and make it relevant to the job.
 5. Do NOT repeat the question in your answer.
 6. Be professional and positive about the candidate's abilities.
-7. For visa/authorization questions, answer honestly based on the profile.`;
+7. Tailor your answer to highlight skills relevant to this specific job.
+8. For visa/authorization questions, answer honestly based on the profile.`;
   }
 
   const answer = await callAI(prompt);
@@ -374,7 +390,20 @@ export function getPresetAnswer(question) {
 
   // Contact questions
   if (q.includes('phone') || q.includes('mobile')) return personal.phoneNumber;
-  if (q.includes('email')) return config.auth.email;
+  
+  // Email - but NOT for recommender/referral questions
+  if (q.includes('email')) {
+    // Skip if asking about recommender/referral email
+    if (q.includes('recommend') || q.includes('referr') || q.includes('employee') || q.includes('refer')) {
+      return '';  // Leave empty - not recommended by anyone
+    }
+    return config.auth.email;
+  }
+  
+  // Recommender/Referral questions - leave empty
+  if (q.includes('recommend') || q.includes('referr') || q.includes('referred by')) {
+    return '';  // Not recommended by anyone
+  }
 
   // Location questions
   if (q.includes('city')) return personal.currentCity;
@@ -396,16 +425,28 @@ export function getPresetAnswer(question) {
   }
 
   // Salary questions
-  if (q.includes('salary') || q.includes('compensation') || q.includes('pay')) {
-    if (q.includes('expected') || q.includes('desired') || q.includes('requirement')) {
-      if (application.salaryCurrency && application.salaryCurrency !== 'USD') {
-        return `${application.desiredSalary} ${application.salaryCurrency}`;
-      }
-      return application.desiredSalary.toString();
+  if (q.includes('salary') || q.includes('compensation') || q.includes('pay') || q.includes('bérigény')) {
+    // Check if field expects a number only (usually has 'HUF' or currency in label already)
+    const expectsNumberOnly = q.includes('huf') || q.includes('(huf)') || q.includes('ft)') || q.includes('forint');
+    
+    // Max salary / upper range
+    if (q.includes('max') || q.includes('maximum') || q.includes('upper') || q.includes('sávos')) {
+      const maxSalary = application.maxSalary || Math.round(application.desiredSalary * 1.25);
+      return expectsNumberOnly ? maxSalary.toString() : `${maxSalary}`;
     }
+    
+    // Expected/desired/minimum salary
+    if (q.includes('expected') || q.includes('desired') || q.includes('requirement') || q.includes('min') || q.includes('base')) {
+      return expectsNumberOnly ? application.desiredSalary.toString() : application.desiredSalary.toString();
+    }
+    
+    // Current salary
     if (q.includes('current')) {
       return application.currentSalary.toString();
     }
+    
+    // Default to desired salary for generic salary questions
+    return application.desiredSalary.toString();
   }
 
   // Notice period

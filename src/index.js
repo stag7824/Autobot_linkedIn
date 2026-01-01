@@ -19,6 +19,7 @@ import {
   setBotInstance, 
   setBotRunning,
   shouldBotRun,
+  setStartBotCallback,
 } from './web/dashboard.js';
 
 const MAX_RETRIES = 5;
@@ -26,6 +27,7 @@ const RETRY_DELAYS = [30000, 60000, 120000, 300000, 600000]; // 30s, 1m, 2m, 5m,
 
 let bot = null;
 let isShuttingDown = false;
+let webServer = null; // Keep server reference to prevent process from exiting
 
 /**
  * Print banner
@@ -112,18 +114,33 @@ async function main() {
 
   // Start web dashboard
   if (config.web.enabled) {
-    await startWebServer();
+    webServer = await startWebServer();
+    
+    // Set up the bot start callback
+    setStartBotCallback(() => {
+      runBot();
+    });
+    
+    console.log('\n✅ Dashboard ready! Click "Start Bot" to begin applying.');
+    console.log(`   Open http://localhost:${config.web.port} in your browser.\n`);
+    
+    // Keep the process alive - server is stored in webServer variable
+    return;
   }
+  
+  // If no web dashboard, run bot directly (CLI mode)
+  await runBot();
+}
 
+/**
+ * Run the bot with retry logic
+ */
+async function runBot() {
   // Check daily limit
   if (stateManager.isLimitReached()) {
     console.log('📊 Daily limit already reached. Try again tomorrow!');
     console.log(`   Applied today: ${stateManager.getTodayCount()}`);
-    if (config.web.enabled) {
-      console.log('🌐 Web dashboard still running. Press Ctrl+C to exit.');
-      return; // Keep web dashboard running
-    }
-    process.exit(0);
+    return;
   }
 
   console.log(`📈 Remaining applications today: ${stateManager.getRemainingToday()}`);
@@ -172,7 +189,7 @@ async function main() {
 
   if (!success && !isShuttingDown) {
     console.error('\n❌ Bot failed after all retries');
-    process.exit(1);
+    return;
   }
 
   // Export final results
@@ -182,7 +199,7 @@ async function main() {
   if (config.bot.runNonStop && success && !isShuttingDown) {
     console.log('\n🔄 Run non-stop mode enabled. Restarting in 5 minutes...');
     await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000));
-    return main(); // Recursive call
+    return runBot(); // Recursive call
   }
 }
 

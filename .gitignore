@@ -5,3 +5,4 @@ node_modules/
 __pycache__/
 Auto_job_applier_linkedIn
 data
+bot.log

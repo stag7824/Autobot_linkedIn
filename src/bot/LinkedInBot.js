@@ -23,6 +23,7 @@ import {
   notifyBotStatus,
   notifyManualIntervention,
 } from '../services/notificationService.js';
+import { shouldBotRun } from '../web/dashboard.js';
 import {
   randomSleep,
   actionDelay,
@@ -54,6 +55,9 @@ export class LinkedInBot {
     this.isLoggedIn = false;
     this.startTime = Date.now();
     this.debugCounter = 0;
+    this.currentJobDescription = '';  // Store job description for AI context
+    this.currentJobTitle = '';        // Current job title for context
+    this.currentCompany = '';         // Current company for context
     this.sessionStats = {
       applied: 0,
       skipped: 0,
@@ -342,6 +346,10 @@ export class LinkedInBot {
 
     console.log(`\n📝 Applying to: ${title} at ${company}`);
     console.log(`   Job ID: ${jobId}, URL: ${href}`);
+    
+    // Store current job context for AI
+    this.currentJobTitle = title;
+    this.currentCompany = company;
 
     try {
       // Navigate to job page - use direct job view URL
@@ -362,6 +370,21 @@ export class LinkedInBot {
         return { success: false, reason: 'navigation_failed' };
       }
 
+      // Check job title against bad job titles (DevOps, AI, etc.)
+      const badJobTitles = config.jobFilter.badJobTitles || [];
+      if (badJobTitles.length > 0) {
+        const jobTitleLower = title.toLowerCase();
+        const badTitleFound = badJobTitles.find(badTitle => 
+          jobTitleLower.includes(badTitle.toLowerCase())
+        );
+        if (badTitleFound) {
+          console.log(`⏭️ Skipping: Job title contains "${badTitleFound}"`);
+          this.sessionStats.skipped++;
+          stateManager.incrementSkipped();
+          return { success: false, reason: `bad_job_title: ${badTitleFound}` };
+        }
+      }
+
       // Check job requirements if COMPLETE_REQUIREMENTS is true
       if (config.jobFilter.completeRequirements) {
         const jobDescription = await this.getJobDescription();
@@ -375,8 +398,10 @@ export class LinkedInBot {
         }
       }
 
-      // Check for bad words in job description
+      // Check for bad words in job description and store for AI context
       const description = await this.getJobDescription();
+      this.currentJobDescription = description;  // Store for AI to use
+      
       const badWordFound = config.jobFilter.badWords.find(word => 
         description.toLowerCase().includes(word.toLowerCase())
       );
@@ -856,6 +881,17 @@ export class LinkedInBot {
   }
 
   /**
+   * Get current job context for AI
+   */
+  getJobContext() {
+    return {
+      title: this.currentJobTitle || '',
+      company: this.currentCompany || '',
+      description: this.currentJobDescription || '',
+    };
+  }
+
+  /**
    * Handle text input field with potential autocomplete (like location/city)
    */
   async handleTextInput(input, label) {
@@ -874,7 +910,7 @@ export class LinkedInBot {
     }
 
     // Get appropriate answer for this field
-    const answer = getPresetAnswer(label) || await answerQuestion(label);
+    const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
     if (!answer) {
       console.log(`   ⚠️ No answer found for: ${label}`);
       return;
@@ -883,28 +919,56 @@ export class LinkedInBot {
     // Check if this is a location/city field with autocomplete
     const isLocationField = label.toLowerCase().includes('city') || 
                            label.toLowerCase().includes('location') ||
-                           label.toLowerCase().includes('address');
+                           label.toLowerCase().includes('address') ||
+                           label.toLowerCase().includes('where');
     
     // Clear and type the answer
     await input.click({ clickCount: 3 });
     await randomSleep(200, 400);
-    await input.type(answer, { delay: 50 });
+    await input.type(answer, { delay: 80 });
     console.log(`   ✅ Filled: ${label} = "${answer}"`);
     
     // Handle autocomplete dropdown for location fields
     if (isLocationField) {
-      await randomSleep(1000, 1500);  // Wait for autocomplete suggestions
+      console.log(`   🔍 Waiting for location autocomplete suggestions...`);
+      await randomSleep(1500, 2000);  // Wait for autocomplete suggestions to load
       
-      // Check if autocomplete dropdown appeared
-      const autocompleteDropdown = await this.page.$('.basic-typeahead__selectable, [role="listbox"], .search-typeahead-v2__results-list');
-      if (autocompleteDropdown) {
-        // Click first suggestion
-        const firstOption = await this.page.$('.basic-typeahead__selectable:first-child, [role="option"]:first-child, .search-typeahead-v2__hit:first-child');
-        if (firstOption) {
-          await firstOption.click();
-          console.log(`   ✅ Selected autocomplete option for location`);
+      // Try multiple selectors for autocomplete dropdown
+      const autocompleteSelectors = [
+        '.basic-typeahead__selectable',
+        '[role="listbox"] [role="option"]',
+        '.search-typeahead-v2__hit',
+        '.fb-single-typeahead-entity',
+        '.artdeco-typeahead__result',
+        'div[data-basic-typeahead-option]',
+      ];
+      
+      let selectedOption = false;
+      for (const selector of autocompleteSelectors) {
+        const options = await this.page.$$(selector);
+        if (options.length > 0) {
+          // Click the first option which should be the best match
+          try {
+            await options[0].click();
+            selectedOption = true;
+            const optionText = await this.page.evaluate(el => el.textContent?.trim()?.substring(0, 50), options[0]);
+            console.log(`   ✅ Selected autocomplete: "${optionText}"`);
+            break;
+          } catch (e) {
+            console.log(`   ⚠️ Failed to click option with ${selector}: ${e.message}`);
+          }
         }
       }
+      
+      if (!selectedOption) {
+        // Try pressing down arrow and enter as fallback
+        console.log(`   ⚠️ No autocomplete dropdown found, trying keyboard navigation...`);
+        await this.page.keyboard.press('ArrowDown');
+        await randomSleep(300, 500);
+        await this.page.keyboard.press('Enter');
+      }
+      
+      await randomSleep(500, 800);
     }
   }
 
@@ -918,7 +982,7 @@ export class LinkedInBot {
       return;
     }
 
-    const answer = getPresetAnswer(label) || await answerQuestion(label);
+    const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
     if (answer) {
       await textarea.click({ clickCount: 3 });
       await textarea.type(answer, { delay: 30 });
@@ -950,7 +1014,7 @@ export class LinkedInBot {
     if (options.length <= 1) return;
 
     const optionTexts = options.map(o => o.text);
-    const answer = getPresetAnswer(label) || await answerQuestion(label, optionTexts);
+    const answer = getPresetAnswer(label) || await answerQuestion(label, optionTexts, this.getJobContext());
     
     if (answer) {
       // Find best matching option
@@ -995,7 +1059,7 @@ export class LinkedInBot {
       return Array.from(labels).map(l => l.textContent?.trim() || '');
     }, container);
 
-    const answer = getPresetAnswer(label) || await answerQuestion(label, radioLabels);
+    const answer = getPresetAnswer(label) || await answerQuestion(label, radioLabels, this.getJobContext());
     
     if (answer) {
       // Find matching radio button
@@ -1059,6 +1123,13 @@ export class LinkedInBot {
         }, checkbox);
         
         if (!isChecked) {
+          // Skip "Follow" checkboxes - user doesn't want to follow companies
+          const labelLower = (labelText || '').toLowerCase();
+          if (labelLower.includes('follow') && !labelLower.includes('up')) {
+            console.log(`   ⏭️ Skipping Follow checkbox: "${labelText?.substring(0, 50)}"`);
+            continue;
+          }
+          
           // Click unchecked checkbox - using JavaScript click for reliability
           await this.page.evaluate(el => {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1519,6 +1590,12 @@ export class LinkedInBot {
 
       // Process each search term
       for (const term of searchTerms) {
+        // Check if stop was requested from dashboard
+        if (!shouldBotRun()) {
+          console.log('⏹️ Stop requested from dashboard');
+          break;
+        }
+        
         if (stateManager.isLimitReached()) {
           console.log('📊 Daily limit reached!');
           break;
@@ -1529,6 +1606,10 @@ export class LinkedInBot {
         let termApplications = 0;
 
         while (termApplications < config.search.switchAfter) {
+          if (!shouldBotRun()) {
+            console.log('⏹️ Stop requested from dashboard');
+            break;
+          }
           if (stateManager.isLimitReached()) break;
 
           await this.searchJobs(term, page);
@@ -1549,6 +1630,7 @@ export class LinkedInBot {
           }
 
           for (const job of jobs) {
+            if (!shouldBotRun()) break;
             if (stateManager.isLimitReached()) break;
             if (termApplications >= config.search.switchAfter) break;
 

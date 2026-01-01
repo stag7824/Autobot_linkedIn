@@ -118,6 +118,7 @@ const config = {
   // ═══════════════════════════════════════════════════════════════════════════
   jobFilter: {
     badWords: parseJSON(process.env.BAD_WORDS, []),
+    badJobTitles: parseJSON(process.env.BAD_JOB_TITLES, []),
     companyBadWords: parseJSON(process.env.COMPANY_BAD_WORDS, []),
     companyGoodWords: parseJSON(process.env.COMPANY_GOOD_WORDS, []),
     hasSecurityClearance: parseBool(process.env.HAS_SECURITY_CLEARANCE, false),
@@ -156,6 +157,7 @@ const config = {
     linkedInUrl: process.env.LINKEDIN_URL || '',
     citizenshipStatus: process.env.CITIZENSHIP_STATUS || '',
     desiredSalary: parseInt(process.env.DESIRED_SALARY, 0),
+    maxSalary: parseInt(process.env.MAX_SALARY, 0),
     salaryCurrency: process.env.SALARY_CURRENCY || 'USD',
     currentSalary: parseInt(process.env.CURRENT_SALARY, 0),
     noticePeriod: parseInt(process.env.NOTICE_PERIOD, 0),
@@ -197,7 +199,7 @@ const config = {
   // ═══════════════════════════════════════════════════════════════════════════
   web: {
     enabled: parseBool(process.env.WEB_DASHBOARD_ENABLED, true),
-    port: parseInt(process.env.WEB_PORT, 3000),
+    port: parseInt(process.env.WEB_PORT, 3003),
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
