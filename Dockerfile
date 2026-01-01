@@ -61,10 +61,10 @@ COPY src/ ./src/
 COPY .env.example ./
 
 # Create data directory
-RUN mkdir -p data && chown -R botuser:botuser /app
+# RUN mkdir -p data && chown -R botuser:botuser /app
 
 # Switch to non-root user
-USER botuser
+# USER botuser
 
 # Force headless mode in container
 ENV HEADLESS=true
