@@ -1,0 +1,7 @@
+.env
+node_modules/
+.DS_Store
+.vscode/
+__pycache__/
+Auto_job_applier_linkedIn
+data

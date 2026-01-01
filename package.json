@@ -1,0 +1,36 @@
+{
+  "name": "linkedin-easy-apply-bot",
+  "version": "2.0.0",
+  "description": "LinkedIn Easy Apply Job Application Bot with AI-powered form filling",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node src/test.js",
+    "docker:build": "docker build -t linkedin-bot .",
+    "docker:run": "docker run --env-file .env -v $(pwd)/data:/app/data linkedin-bot"
+  },
+  "keywords": [
+    "linkedin",
+    "job-bot",
+    "automation",
+    "easy-apply",
+    "ai",
+    "gemini"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@openrouter/sdk": "^0.3.11",
+    "dotenv": "^16.3.1",
+    "express": "^5.2.1",
+    "puppeteer": "^24.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

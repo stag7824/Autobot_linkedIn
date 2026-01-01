@@ -1,0 +1,64 @@
+
+═══════════════════════════════════════════════════
+    LinkedIn Easy Apply Bot v2.0.0
+═══════════════════════════════════════════════════
+🔧 Mode: DEVELOPMENT
+Started at: 2026-01-01T20:08:09.551Z
+
+📊 Configuration:
+   Daily limit: 20
+   Search terms: Java Developer
+   Location: Hungary
+   Easy Apply only: true
+   Complete requirements: false
+   Headless mode: false
+   AI enabled: true
+   Notifications: true
+   Skip resume upload: true
+   ⏱️  Application delay: 5-15 sec (development mode)
+
+🌐 Web dashboard running at http://localhost:3000
+📈 Remaining applications today: 20
+
+🚀 Starting bot (attempt 1/5)...
+🚀 Initializing browser...
+📁 Using session directory: ./data/session
+✅ Browser initialized
+🤖 Initializing AI providers...
+✅ Gemini AI initialized (gemini-2.5-flash)
+✅ OpenRouter AI initialized (mimo-v2-flash:free)
+🎯 Active AI provider: gemini
+🔐 Logging in to LinkedIn...
+✅ Already logged in
+
+🎯 Processing topic: Java Developer
+🔍 Searching for "Java Developer" jobs (page 1)...
+⚠️ Job list selector not found
+🔒 Closing browser...
+
+❌ Error (attempt 1/5): Attempted to use detached Frame '10CCBAF40E360526FBFAE76BE5D48E21'.
+⏳ Waiting 30s before retry...
+
+🚀 Starting bot (attempt 2/5)...
+🚀 Initializing browser...
+📁 Using session directory: ./data/session
+
+❌ Error (attempt 2/5): The browser is already running for /Users/talha/Desktop/Coding.nosync/Job_bot/data/session. Use a different `userDataDir` or stop the running browser first.
+⏳ Waiting 60s before retry...
+
+🚀 Starting bot (attempt 3/5)...
+🚀 Initializing browser...
+📁 Using session directory: ./data/session
+
+❌ Error (attempt 3/5): The browser is already running for /Users/talha/Desktop/Coding.nosync/Job_bot/data/session. Use a different `userDataDir` or stop the running browser first.
+⏳ Waiting 120s before retry...
+
+🚀 Starting bot (attempt 4/5)...
+🚀 Initializing browser...
+📁 Using session directory: ./data/session
+
+❌ Error (attempt 4/5): The browser is already running for /Users/talha/Desktop/Coding.nosync/Job_bot/data/session. Use a different `userDataDir` or stop the running browser first.
+⏳ Waiting 300s before retry...
+
+⚠️ Received SIGTERM - shutting down gracefully...
+Error during shutdown: Cannot convert undefined or null to object
