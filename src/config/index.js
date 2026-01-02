@@ -22,8 +22,10 @@ dotenv.config({ path: join(__dirname, '..', '..', '.env') });
 function parseJSON(envVar, defaultValue) {
   if (!envVar) return defaultValue;
   try {
-    return JSON.parse(envVar);
-  } catch {
+    const parsed = JSON.parse(envVar);
+    return parsed;
+  } catch (e) {
+    console.error(`⚠️ Failed to parse JSON env var: ${envVar?.substring(0, 50)}... Error: ${e.message}`);
     return defaultValue;
   }
 }

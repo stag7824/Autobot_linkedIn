@@ -180,6 +180,22 @@ app.get('/api/health', (req, res) => {
 // SETTINGS API
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Debug endpoint to check env and config values
+app.get('/api/debug', (req, res) => {
+  res.json({
+    env: {
+      BAD_WORDS: process.env.BAD_WORDS?.substring(0, 100),
+      BAD_JOB_TITLES: process.env.BAD_JOB_TITLES?.substring(0, 100),
+      SEARCH_TERMS: process.env.SEARCH_TERMS,
+    },
+    config: {
+      badWords: config.jobFilter?.badWords,
+      badJobTitles: config.jobFilter?.badJobTitles,
+      searchTerms: config.search?.terms,
+    }
+  });
+});
+
 // Get all settings
 app.get('/api/settings', (req, res) => {
   const settings = getSettings();
