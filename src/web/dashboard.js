@@ -740,13 +740,13 @@ const dashboardHTML = `
   </script>
 </body>
 </html>
-\`;
+`;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SETTINGS PAGE HTML
 // ═══════════════════════════════════════════════════════════════════════════
 
-const settingsHTML = \`
+const settingsHTML = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
