@@ -33,13 +33,9 @@ function parseJSON(envVar, defaultValue) {
   }
   
   try {
-    const parsed = JSON.parse(value);
-    console.log(`✅ Parsed env var successfully: ${Array.isArray(parsed) ? `array with ${parsed.length} items` : typeof parsed}`);
-    return parsed;
+    return JSON.parse(value);
   } catch (e) {
-    console.error(`⚠️ Failed to parse JSON env var: ${envVar?.substring(0, 100)}...`);
-    console.error(`   After cleanup: ${value?.substring(0, 100)}...`);
-    console.error(`   Error: ${e.message}`);
+    console.error(`⚠️ Failed to parse JSON env var: ${e.message}`);
     return defaultValue;
   }
 }
