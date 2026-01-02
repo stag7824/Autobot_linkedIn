@@ -165,9 +165,25 @@ export function loadSettings() {
     if (existsSync(SETTINGS_FILE)) {
       const fileContent = readFileSync(SETTINGS_FILE, 'utf8');
       const savedSettings = JSON.parse(fileContent);
-      // Merge: hardcoded defaults < env defaults < saved settings
-      settings = { ...defaultSettings, ...envDefaults, ...savedSettings };
-      console.log('📁 Loaded settings from settings.json');
+      
+      // Smart merge: don't override env arrays with empty saved arrays
+      // This ensures env vars are used when settings.json has empty arrays
+      const mergedSettings = { ...defaultSettings, ...envDefaults };
+      
+      for (const [key, value] of Object.entries(savedSettings)) {
+        // If saved value is an empty array but env has values, keep env values
+        if (Array.isArray(value) && value.length === 0) {
+          const envValue = envDefaults[key];
+          if (Array.isArray(envValue) && envValue.length > 0) {
+            // Keep the env value, don't override with empty array
+            continue;
+          }
+        }
+        mergedSettings[key] = value;
+      }
+      
+      settings = mergedSettings;
+      console.log('📁 Loaded settings from settings.json (merged with env)');
     } else {
       // No settings file - use env defaults
       settings = { ...defaultSettings, ...envDefaults };
