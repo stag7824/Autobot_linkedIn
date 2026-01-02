@@ -182,11 +182,16 @@ app.get('/api/health', (req, res) => {
 
 // Debug endpoint to check env and config values
 app.get('/api/debug', (req, res) => {
+  const searchTermsRaw = process.env.SEARCH_TERMS || '';
+  // Show first 20 chars as character codes to see exact escaping
+  const charCodes = searchTermsRaw.split('').slice(0, 30).map(c => c.charCodeAt(0));
+  
   res.json({
     env: {
       BAD_WORDS: process.env.BAD_WORDS?.substring(0, 100),
       BAD_JOB_TITLES: process.env.BAD_JOB_TITLES?.substring(0, 100),
       SEARCH_TERMS: process.env.SEARCH_TERMS,
+      SEARCH_TERMS_CHARS: charCodes,
     },
     config: {
       badWords: config.jobFilter?.badWords,
