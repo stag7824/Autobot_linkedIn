@@ -18,14 +18,28 @@ dotenv.config({ path: join(__dirname, '..', '..', '.env') });
 
 /**
  * Parse JSON from environment variable with fallback
+ * Handles double-escaped JSON strings from Coolify/Docker
  */
 function parseJSON(envVar, defaultValue) {
   if (!envVar) return defaultValue;
+  
+  let value = envVar;
+  
+  // Handle double-escaped JSON from Coolify (\" becomes \\\")
+  // Try to detect and fix double-escaping
+  if (value.includes('\\"') || value.includes('\\\\')) {
+    // Replace escaped quotes with regular quotes
+    value = value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  
   try {
-    const parsed = JSON.parse(envVar);
+    const parsed = JSON.parse(value);
+    console.log(`✅ Parsed env var successfully: ${Array.isArray(parsed) ? `array with ${parsed.length} items` : typeof parsed}`);
     return parsed;
   } catch (e) {
-    console.error(`⚠️ Failed to parse JSON env var: ${envVar?.substring(0, 50)}... Error: ${e.message}`);
+    console.error(`⚠️ Failed to parse JSON env var: ${envVar?.substring(0, 100)}...`);
+    console.error(`   After cleanup: ${value?.substring(0, 100)}...`);
+    console.error(`   Error: ${e.message}`);
     return defaultValue;
   }
 }
