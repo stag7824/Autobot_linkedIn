@@ -9,6 +9,7 @@
 import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import fs from 'fs';
 import config from '../config/index.js';
 import stateManager from '../services/stateManager.js';
 import { getAIStatus } from '../services/aiService.js';
@@ -193,6 +194,39 @@ app.post('/api/settings', (req, res) => {
     // Apply to running config
     applySettingsToConfig(config);
     res.json({ success: true, message: 'Settings saved' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Clear session lock files
+app.post('/api/session/clear-lock', (req, res) => {
+  try {
+    const sessionDir = process.env.SAVE_PATH 
+      ? join(process.env.SAVE_PATH, 'session')
+      : './data/session';
+    
+    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    let cleared = [];
+    
+    for (const file of lockFiles) {
+      const filePath = join(sessionDir, file);
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          cleared.push(file);
+        }
+      } catch (e) {
+        // Ignore individual file errors
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: cleared.length > 0 
+        ? `Cleared: ${cleared.join(', ')}` 
+        : 'No lock files found'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -454,6 +488,7 @@ const dashboardHTML = `
         </div>
         <button class="btn btn-start" id="startBtn" onclick="startBot()" style="display: none;">▶️ Start Bot</button>
         <button class="btn btn-stop" id="stopBtn" onclick="stopBot()" style="display: none;">⏹️ Stop Bot</button>
+        <button class="btn" onclick="clearSessionLock()" style="background: #f59e0b; margin-top: 10px;">🔓 Clear Session Lock</button>
       </div>
       
       <!-- Today's Applications -->
@@ -657,6 +692,16 @@ const dashboardHTML = `
         }
       } catch (err) {
         alert('Failed to stop bot');
+      }
+    }
+    
+    async function clearSessionLock() {
+      try {
+        const res = await fetch('/api/session/clear-lock', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || (data.success ? 'Lock cleared!' : 'Failed to clear lock'));
+      } catch (err) {
+        alert('Failed to clear session lock');
       }
     }
     
