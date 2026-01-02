@@ -1142,7 +1142,11 @@ const settingsHTML = \`
     
     function renderTags(containerId, items, inputId) {
       const container = document.getElementById(containerId);
-      const input = document.getElementById(inputId);
+      // Store current input value before clearing
+      const oldInput = document.getElementById(inputId);
+      const currentValue = oldInput ? oldInput.value : '';
+      const placeholder = oldInput ? oldInput.placeholder : 'Add...';
+      
       container.innerHTML = '';
       items.forEach((item, i) => {
         const tag = document.createElement('span');
@@ -1150,7 +1154,28 @@ const settingsHTML = \`
         tag.innerHTML = item + '<span class="remove" onclick="removeTag(\\'' + containerId + '\\', ' + i + ')">×</span>';
         container.appendChild(tag);
       });
-      container.appendChild(input);
+      
+      // Create new input element
+      const newInput = document.createElement('input');
+      newInput.type = 'text';
+      newInput.id = inputId;
+      newInput.placeholder = placeholder;
+      newInput.value = currentValue;
+      container.appendChild(newInput);
+      
+      // Re-attach event listener
+      setupTagInputElement(newInput, containerId, items);
+    }
+    
+    function setupTagInputElement(input, containerId, array) {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && e.target.value.trim()) {
+          e.preventDefault();
+          array.push(e.target.value.trim());
+          e.target.value = '';
+          renderTags(containerId, array, e.target.id);
+        }
+      });
     }
     
     function removeTag(containerId, index) {
@@ -1164,17 +1189,6 @@ const settingsHTML = \`
         badJobTitles.splice(index, 1);
         renderTags('badJobTitlesContainer', badJobTitles, 'badJobTitlesInput');
       }
-    }
-    
-    function setupTagInput(inputId, containerId, array) {
-      document.getElementById(inputId).addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.target.value.trim()) {
-          e.preventDefault();
-          array.push(e.target.value.trim());
-          e.target.value = '';
-          renderTags(containerId, array, inputId);
-        }
-      });
     }
     
     async function loadSettings() {
@@ -1312,10 +1326,8 @@ const settingsHTML = \`
       }
     }
     
-    // Setup tag inputs
-    setupTagInput('searchTermsInput', 'searchTermsContainer', searchTerms);
-    setupTagInput('badWordsInput', 'badWordsContainer', badWords);
-    setupTagInput('badJobTitlesInput', 'badJobTitlesContainer', badJobTitles);
+    // Initialize tag inputs after DOM is ready - the event listeners will be attached
+    // during renderTags when loadSettings completes
     
     // Load settings on page load
     loadSettings();
