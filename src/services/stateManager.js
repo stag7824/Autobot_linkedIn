@@ -17,6 +17,18 @@ const BOT_STATE_FILE = path.join(DATA_DIR, 'bot_state.json');
 const ERROR_LOG_FILE = path.join(DATA_DIR, 'error_log.json');
 const DAILY_STATS_FILE = path.join(DATA_DIR, 'daily_stats.json');
 
+/**
+ * Get today's date in local timezone (YYYY-MM-DD format)
+ * Uses toLocaleDateString to avoid UTC timezone issues
+ */
+function getLocalDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -87,7 +99,7 @@ class StateManager {
       failed: 0 
     });
     
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDate();
     if (stats.date !== today) {
       console.log(`📅 New day detected (${today}). Resetting daily stats from ${stats.date || 'none'}.`);
       const newStats = { date: today, applied: 0, skipped: 0, failed: 0 };
@@ -103,7 +115,7 @@ class StateManager {
    * Call this before any operation that depends on daily stats
    */
   checkAndResetDailyStats() {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDate();
     if (this.dailyStats.date !== today) {
       console.log(`📅 New day detected (${today}). Resetting daily stats.`);
       this.dailyStats = { date: today, applied: 0, skipped: 0, failed: 0 };
