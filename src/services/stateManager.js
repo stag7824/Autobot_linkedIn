@@ -17,16 +17,23 @@ const BOT_STATE_FILE = path.join(DATA_DIR, 'bot_state.json');
 const ERROR_LOG_FILE = path.join(DATA_DIR, 'error_log.json');
 const DAILY_STATS_FILE = path.join(DATA_DIR, 'daily_stats.json');
 
+// Timezone from env or default to Europe/Budapest
+const TIMEZONE = process.env.TZ || 'Europe/Budapest';
+
 /**
- * Get today's date in local timezone (YYYY-MM-DD format)
- * Uses toLocaleDateString to avoid UTC timezone issues
+ * Get today's date in configured timezone (YYYY-MM-DD format)
+ * Uses Intl.DateTimeFormat for reliable timezone handling
  */
 function getLocalDate() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  // Use Intl.DateTimeFormat for proper timezone support
+  const formatter = new Intl.DateTimeFormat('en-CA', { 
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(now); // Returns YYYY-MM-DD format
 }
 
 // Ensure data directory exists
