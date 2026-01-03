@@ -50,6 +50,8 @@ export function setBotRunning(running) {
   botRunning = running;
   if (running) {
     botStartTime = Date.now();
+  } else {
+    botStartTime = null; // Reset runtime when stopped
   }
 }
 
