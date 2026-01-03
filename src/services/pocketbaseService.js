@@ -65,6 +65,11 @@ export async function saveJobApplication(jobData) {
   if (!token) return null;
   
   try {
+    // Stringify applicationData for the text field
+    const dataString = jobData.applicationData 
+      ? JSON.stringify(jobData.applicationData, null, 2) 
+      : '';
+    
     const payload = {
       job_id: jobData.jobId || '',
       job_title: jobData.title || '',
@@ -72,8 +77,8 @@ export async function saveJobApplication(jobData) {
       job_link: jobData.url || '',
       status: jobData.status || 'applied',
       application_data: jobData.applicationData || {},
-      // Complete application data with all questions, responses, and actions
-      data: jobData.applicationData || {},
+      // Complete application data as stringified JSON for text field
+      data: dataString,
     };
     
     const response = await fetch(`${POCKETBASE_URL}/api/collections/${COLLECTION_NAME}/records`, {

@@ -1773,24 +1773,29 @@ export class LinkedInBot {
         throw new Error('Failed to login');
       }
 
-      await notifyBotStatus('Started', `Processing ${config.search.terms.length} topics`);
+      await notifyBotStatus('Started', `Processing ${config.search.terms.length} search term(s)`);
 
       // Get search terms (optionally randomize)
       let searchTerms = [...config.search.terms];
       if (config.search.randomize) {
         searchTerms = searchTerms.sort(() => Math.random() - 0.5);
       }
+      
+      let stoppedByUser = false;
+      let limitReached = false;
 
       // Process each search term
       for (const term of searchTerms) {
         // Check if stop was requested from dashboard
         if (!shouldBotRun()) {
           console.log('⏹️ Stop requested from dashboard');
+          stoppedByUser = true;
           break;
         }
         
         if (stateManager.isLimitReached()) {
           console.log('📊 Daily limit reached!');
+          limitReached = true;
           break;
         }
 
@@ -1801,9 +1806,13 @@ export class LinkedInBot {
         while (termApplications < config.search.switchAfter) {
           if (!shouldBotRun()) {
             console.log('⏹️ Stop requested from dashboard');
+            stoppedByUser = true;
             break;
           }
-          if (stateManager.isLimitReached()) break;
+          if (stateManager.isLimitReached()) {
+            limitReached = true;
+            break;
+          }
 
           await this.searchJobs(term, page);
           const jobs = await this.getJobCards();
@@ -1861,7 +1870,24 @@ export class LinkedInBot {
         console.log(`✅ Finished "${term}": ${termApplications} applications`);
       }
 
+      // Send completion notification based on how bot stopped
+      const stats = this.sessionStats;
+      const runtime = formatDuration(Date.now() - this.startTime);
+      
+      if (stoppedByUser) {
+        await notifyBotStatus('Stopped', `Stopped by user. Applied: ${stats.applied}, Skipped: ${stats.skipped}, Failed: ${stats.failed}. Runtime: ${runtime}`);
+      } else if (limitReached) {
+        await notifyBotStatus('Completed', `Daily limit reached! Applied: ${stats.applied}, Skipped: ${stats.skipped}, Failed: ${stats.failed}. Runtime: ${runtime}`);
+      } else {
+        await notifyBotStatus('Completed', `Finished all search terms. Applied: ${stats.applied}, Skipped: ${stats.skipped}, Failed: ${stats.failed}. Runtime: ${runtime}`);
+      }
+
       return this.sessionStats;
+    } catch (error) {
+      // Send error notification
+      const runtime = formatDuration(Date.now() - this.startTime);
+      await notifyBotStatus('Error', `Bot crashed: ${error.message}. Runtime: ${runtime}`);
+      throw error;
     } finally {
       await this.close();
     }
