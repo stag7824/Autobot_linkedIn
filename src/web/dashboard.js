@@ -614,6 +614,42 @@ const dashboardHTML = `
         </div>
       </div>
       
+      <!-- Scheduler -->
+      <div class="card" style="grid-column: span 2;">
+        <h3>⏰ Auto-Apply Scheduler</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 20px; margin-top: 10px;">
+          <div style="display: flex; align-items: center; gap: 15px;">
+            <div>
+              <div class="label">Status</div>
+              <div style="font-size: 1.2rem; margin-top: 5px;" id="schedulerStatus">-</div>
+            </div>
+            <button class="btn" id="schedulerBtn" onclick="toggleScheduler()" style="background: #0077b5;">
+              Enable
+            </button>
+          </div>
+          <div>
+            <div class="label">Next Run</div>
+            <div style="font-size: 1.1rem; margin-top: 5px; color: #00c853;" id="nextRun">Not scheduled</div>
+          </div>
+          <div style="display: flex; gap: 15px; align-items: center;">
+            <div>
+              <div class="label">Start Hour</div>
+              <input type="number" id="startHourInput" min="0" max="23" style="width: 60px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; color: white; text-align: center;" />
+            </div>
+            <div>
+              <div class="label">End Hour</div>
+              <input type="number" id="endHourInput" min="0" max="23" style="width: 60px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 8px; color: white; text-align: center;" />
+            </div>
+            <button onclick="updateSchedulerSettings()" style="padding: 8px 16px; background: #0077b5; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 15px;">
+              Update Hours
+            </button>
+          </div>
+        </div>
+        <div class="label" style="margin-top: 15px; color: #888;">
+          Bot will run once per day at a random time between start and end hours.
+        </div>
+      </div>
+      
       <!-- Config -->
       <div class="card" style="grid-column: span 2;">
         <h3>⚙️ Configuration</h3>
@@ -809,13 +845,105 @@ const dashboardHTML = `
       }
     }
     
+    async function fetchScheduler() {
+      try {
+        const res = await fetch('/api/scheduler');
+        const data = await res.json();
+        
+        const statusEl = document.getElementById('schedulerStatus');
+        const btn = document.getElementById('schedulerBtn');
+        const nextRunEl = document.getElementById('nextRun');
+        
+        if (data.enabled) {
+          statusEl.textContent = '✅ Enabled';
+          statusEl.style.color = '#00c853';
+          btn.textContent = '⏹️ Disable';
+          btn.style.background = '#ff5252';
+        } else {
+          statusEl.textContent = '❌ Disabled';
+          statusEl.style.color = '#ff5252';
+          btn.textContent = '▶️ Enable';
+          btn.style.background = '#00c853';
+        }
+        
+        if (data.nextRunFormatted) {
+          nextRunEl.textContent = data.nextRunFormatted;
+        } else {
+          nextRunEl.textContent = 'Not scheduled';
+        }
+        
+        document.getElementById('startHourInput').value = data.startHour || 6;
+        document.getElementById('endHourInput').value = data.endHour || 21;
+        
+      } catch (err) {
+        console.error('Failed to fetch scheduler:', err);
+      }
+    }
+    
+    async function toggleScheduler() {
+      try {
+        const res = await fetch('/api/scheduler');
+        const current = await res.json();
+        
+        const toggleRes = await fetch('/api/scheduler/toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !current.enabled }),
+        });
+        const data = await toggleRes.json();
+        
+        if (data.success) {
+          fetchScheduler();
+        } else {
+          alert(data.error || 'Failed to toggle scheduler');
+        }
+      } catch (err) {
+        alert('Failed to toggle scheduler');
+      }
+    }
+    
+    async function updateSchedulerSettings() {
+      const startHour = parseInt(document.getElementById('startHourInput').value);
+      const endHour = parseInt(document.getElementById('endHourInput').value);
+      
+      if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23) {
+        alert('Hours must be between 0 and 23');
+        return;
+      }
+      
+      if (startHour >= endHour) {
+        alert('Start hour must be less than end hour');
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/scheduler/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startHour, endHour }),
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          alert('Scheduler hours updated!');
+          fetchScheduler();
+        } else {
+          alert(data.error || 'Failed to update settings');
+        }
+      } catch (err) {
+        alert('Failed to update scheduler settings');
+      }
+    }
+    
     // Initial fetch
     fetchStatus();
     fetchJobs();
+    fetchScheduler();
     
     // Auto-refresh every 5 seconds
     setInterval(fetchStatus, 5000);
     setInterval(fetchJobs, 30000);
+    setInterval(fetchScheduler, 10000);
   </script>
 </body>
 </html>
