@@ -66,6 +66,52 @@ export class LinkedInBot {
       skipped: 0,
       failed: 0,
     };
+    // Track all application interactions for data collection
+    this.applicationData = null;
+  }
+
+  /**
+   * Reset application data tracker for new job application
+   */
+  resetApplicationData(jobId, title, company) {
+    this.applicationData = {
+      jobId,
+      title,
+      company,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      steps: [],
+      formFields: [],
+      actions: [],
+      totalSteps: 0,
+    };
+  }
+
+  /**
+   * Log an action taken during application
+   */
+  logAction(actionType, details) {
+    if (!this.applicationData) return;
+    this.applicationData.actions.push({
+      timestamp: new Date().toISOString(),
+      type: actionType,
+      ...details,
+    });
+  }
+
+  /**
+   * Log a form field interaction
+   */
+  logFormField(fieldType, label, value, action, options = null) {
+    if (!this.applicationData) return;
+    this.applicationData.formFields.push({
+      timestamp: new Date().toISOString(),
+      fieldType,
+      label: label || 'unknown',
+      value,
+      action,
+      options: options || undefined,
+    });
   }
 
   /**
@@ -393,6 +439,10 @@ export class LinkedInBot {
     // Store current job context for AI
     this.currentJobTitle = title;
     this.currentCompany = company;
+    
+    // Initialize application data tracking
+    this.resetApplicationData(jobId, title, company);
+    this.logAction('application_started', { jobId, title, company, href });
 
     try {
       // Navigate to job page - use direct job view URL
@@ -525,12 +575,31 @@ export class LinkedInBot {
       const applied = await this.handleEasyApplyModal();
 
       if (applied) {
-        stateManager.addAppliedJob(jobId, { title, company, url: fullUrl });
+        // Complete application data
+        if (this.applicationData) {
+          this.applicationData.completedAt = new Date().toISOString();
+          this.applicationData.status = 'success';
+          this.logAction('application_completed', { success: true });
+        }
+        
+        stateManager.addAppliedJob(jobId, { 
+          title, 
+          company, 
+          url: fullUrl,
+          applicationData: this.applicationData,
+        });
         this.sessionStats.applied++;
         console.log(`✅ Successfully applied to: ${title}`);
         await notifyApplicationSuccess(title, company);
         return { success: true };
       } else {
+        // Log failed application data
+        if (this.applicationData) {
+          this.applicationData.completedAt = new Date().toISOString();
+          this.applicationData.status = 'failed';
+          this.logAction('application_failed', { reason: 'incomplete' });
+        }
+        
         await this.debugSnapshot('application_failed');
         this.sessionStats.failed++;
         stateManager.incrementFailed();
@@ -663,10 +732,12 @@ export class LinkedInBot {
     let step = 0;
 
     console.log('📝 Starting Easy Apply modal handler...');
+    this.logAction('modal_started', { maxSteps });
 
     while (step < maxSteps) {
       step++;
       console.log(`\n--- Step ${step}/${maxSteps} ---`);
+      this.logAction('step_started', { step, maxSteps });
       await randomSleep(1500, 2500);
       
       // Take debug snapshot at each step
@@ -775,8 +846,11 @@ export class LinkedInBot {
       // Try to proceed - check Submit first (final step)
       if (await this.tryClickSubmit()) {
         console.log('🚀 Clicked Submit, waiting for result...');
+        this.logAction('button_clicked', { button: 'submit', step });
         await randomSleep(2000, 3000);
         if (await this.checkApplicationSuccess()) {
+          this.logAction('application_success', { step });
+          if (this.applicationData) this.applicationData.totalSteps = step;
           return true;
         }
         // If submit didn't lead to success, might be validation error
@@ -786,12 +860,14 @@ export class LinkedInBot {
       // Try Review (step before Submit)
       if (await this.tryClickReview()) {
         console.log('📋 Clicked Review, moving to next step...');
+        this.logAction('button_clicked', { button: 'review', step });
         continue;
       }
 
       // Try Next/Continue
       if (await this.tryClickNext()) {
         console.log('➡️ Clicked Next, moving to next step...');
+        this.logAction('button_clicked', { button: 'next', step });
         continue;
       }
 
@@ -949,6 +1025,7 @@ export class LinkedInBot {
     
     if (currentValue) {
       console.log(`   ✓ Already filled: ${label} = "${currentValue.substring(0, 30)}"`);
+      this.logFormField('text_input', label, currentValue, 'already_filled');
       return;
     }
 
@@ -956,6 +1033,7 @@ export class LinkedInBot {
     const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
     if (!answer) {
       console.log(`   ⚠️ No answer found for: ${label}`);
+      this.logFormField('text_input', label, null, 'no_answer');
       return;
     }
 
@@ -970,6 +1048,7 @@ export class LinkedInBot {
     await randomSleep(200, 400);
     await input.type(answer, { delay: 80 });
     console.log(`   ✅ Filled: ${label} = "${answer}"`);
+    this.logFormField('text_input', label, answer, 'typed');
     
     // Handle autocomplete dropdown for location fields
     if (isLocationField) {
@@ -1022,6 +1101,7 @@ export class LinkedInBot {
     const currentValue = await this.page.evaluate(el => el.value, textarea);
     if (currentValue) {
       console.log(`   ✓ Already filled: ${label}`);
+      this.logFormField('textarea', label, currentValue.substring(0, 100), 'already_filled');
       return;
     }
 
@@ -1030,6 +1110,9 @@ export class LinkedInBot {
       await textarea.click({ clickCount: 3 });
       await textarea.type(answer, { delay: 30 });
       console.log(`   ✅ Filled textarea: ${label}`);
+      this.logFormField('textarea', label, answer, 'typed');
+    } else {
+      this.logFormField('textarea', label, null, 'no_answer');
     }
   }
 
@@ -1048,15 +1131,17 @@ export class LinkedInBot {
       return Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
     }, select);
     
+    const optionTexts = options.map(o => o.text);
+    
     // Skip if already selected a real option (not placeholder)
     if (currentSelection && !currentSelection.toLowerCase().includes('select') && options.length > 1) {
       console.log(`   ✓ Already selected: ${label} = "${currentSelection}"`);
+      this.logFormField('dropdown', label, currentSelection, 'already_selected', optionTexts);
       return;
     }
 
     if (options.length <= 1) return;
 
-    const optionTexts = options.map(o => o.text);
     const answer = getPresetAnswer(label) || await answerQuestion(label, optionTexts, this.getJobContext());
     
     if (answer) {
@@ -1070,12 +1155,14 @@ export class LinkedInBot {
       if (matchOption && matchOption.value) {
         await select.select(matchOption.value);
         console.log(`   ✅ Selected: ${label} = "${matchOption.text}"`);
+        this.logFormField('dropdown', label, matchOption.text, 'selected', optionTexts);
       } else {
         // If no match, select first non-placeholder option
         const firstRealOption = options.find(o => o.value && !o.text.toLowerCase().includes('select'));
         if (firstRealOption) {
           await select.select(firstRealOption.value);
           console.log(`   ⚡ Default selected: ${label} = "${firstRealOption.text}"`);
+          this.logFormField('dropdown', label, firstRealOption.text, 'default_selected', optionTexts);
         }
       }
     }
@@ -1091,16 +1178,23 @@ export class LinkedInBot {
       radios
     );
     
-    if (isChecked) {
-      console.log(`   ✓ Already answered: ${label}`);
-      return;
-    }
-
     // Get radio labels
     const radioLabels = await this.page.evaluate(cont => {
       const labels = cont.querySelectorAll('label');
       return Array.from(labels).map(l => l.textContent?.trim() || '');
     }, container);
+    
+    if (isChecked) {
+      const checkedLabel = await this.page.evaluate((els, labels) => {
+        for (let i = 0; i < els.length; i++) {
+          if (els[i].checked) return labels[i] || 'unknown';
+        }
+        return 'unknown';
+      }, radios, radioLabels);
+      console.log(`   ✓ Already answered: ${label}`);
+      this.logFormField('radio', label, checkedLabel, 'already_selected', radioLabels);
+      return;
+    }
 
     const answer = getPresetAnswer(label) || await answerQuestion(label, radioLabels, this.getJobContext());
     
@@ -1114,6 +1208,7 @@ export class LinkedInBot {
             (answer.toLowerCase() === 'no' && radioLabel.toLowerCase().includes('no'))) {
           await radios[i].click();
           console.log(`   ✅ Selected radio: ${label} = "${radioLabel}"`);
+          this.logFormField('radio', label, radioLabel, 'selected', radioLabels);
           return;
         }
       }
@@ -1123,6 +1218,7 @@ export class LinkedInBot {
     if (radios.length > 0) {
       await radios[0].click();
       console.log(`   ⚡ Default selected first radio option for: ${label}`);
+      this.logFormField('radio', label, radioLabels[0] || 'first', 'default_selected', radioLabels);
     }
   }
 
@@ -1195,10 +1291,12 @@ export class LinkedInBot {
             
             if (unchecked) {
               console.log(`   ❌ Unchecked Follow: "${labelText?.substring(0, 50)}"`);
+              this.logFormField('checkbox', labelText, false, 'unchecked');
             }
             await randomSleep(200, 400);
           } else {
             console.log(`   ⏭️ Follow already unchecked: "${labelText?.substring(0, 50)}"`);
+            this.logFormField('checkbox', labelText, false, 'already_unchecked');
           }
           continue;
         }
@@ -1219,6 +1317,7 @@ export class LinkedInBot {
           
           if (!shouldCheck) {
             console.log(`   ⏭️ Skipping (AI said no): "${labelText?.substring(0, 50)}"`);
+            this.logFormField('checkbox', labelText, false, 'skipped_by_ai');
             continue;
           }
           
@@ -1250,11 +1349,13 @@ export class LinkedInBot {
           if (clicked) {
             const labelPreview = labelText ? labelText.substring(0, 50) : checkboxId;
             console.log(`   ✅ Checked: "${labelPreview}${labelText?.length > 50 ? '...' : ''}"`);
+            this.logFormField('checkbox', labelText, true, 'checked');
           }
           
           await randomSleep(200, 400);
         } else {
           console.log(`   ✓ Already checked: ${(labelText || checkboxId).substring(0, 50)}`);
+          this.logFormField('checkbox', labelText || checkboxId, true, 'already_checked');
         }
       } catch (e) {
         console.log(`   ⚠️ Error handling checkbox: ${e.message}`);

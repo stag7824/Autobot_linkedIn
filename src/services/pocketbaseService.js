@@ -72,6 +72,8 @@ export async function saveJobApplication(jobData) {
       job_link: jobData.url || '',
       status: jobData.status || 'applied',
       application_data: jobData.applicationData || {},
+      // Complete application data with all questions, responses, and actions
+      data: jobData.applicationData || {},
     };
     
     const response = await fetch(`${POCKETBASE_URL}/api/collections/${COLLECTION_NAME}/records`, {
