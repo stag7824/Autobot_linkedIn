@@ -149,6 +149,11 @@ const defaultSettings = {
   followCompanies: false,
   pauseBeforeSubmit: false,
   stealthMode: true,
+  
+  // Scheduler / Auto-apply
+  autoApplyEnabled: false,
+  autoApplyStartHour: 6,   // 6 AM
+  autoApplyEndHour: 21,    // 9 PM
 };
 
 let settings = { ...defaultSettings };

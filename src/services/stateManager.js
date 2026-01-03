@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import config from '../config/index.js';
+import { saveJobApplication } from './pocketbaseService.js';
 
 const DATA_DIR = config.bot.savePath;
 const APPLIED_JOBS_FILE = path.join(DATA_DIR, 'applied_jobs.json');
@@ -88,9 +89,26 @@ class StateManager {
     
     const today = new Date().toISOString().split('T')[0];
     if (stats.date !== today) {
-      return { date: today, applied: 0, skipped: 0, failed: 0 };
+      console.log(`📅 New day detected (${today}). Resetting daily stats from ${stats.date || 'none'}.`);
+      const newStats = { date: today, applied: 0, skipped: 0, failed: 0 };
+      // Save immediately so file reflects the reset
+      saveJSON(DAILY_STATS_FILE, newStats);
+      return newStats;
     }
     return stats;
+  }
+
+  /**
+   * Check and reset daily stats if date has changed
+   * Call this before any operation that depends on daily stats
+   */
+  checkAndResetDailyStats() {
+    const today = new Date().toISOString().split('T')[0];
+    if (this.dailyStats.date !== today) {
+      console.log(`📅 New day detected (${today}). Resetting daily stats.`);
+      this.dailyStats = { date: today, applied: 0, skipped: 0, failed: 0 };
+      this.save();
+    }
   }
 
   /**
@@ -113,12 +131,25 @@ class StateManager {
     this.dailyStats.applied++;
     
     this.save();
+    
+    // Also save to Pocketbase (async, non-blocking)
+    saveJobApplication({
+      jobId,
+      title: details.title,
+      company: details.company,
+      url: details.url,
+      status: 'applied',
+      applicationData: details.applicationData || {},
+    }).catch(err => {
+      console.log('⚠️ Failed to save to Pocketbase:', err.message);
+    });
   }
 
   /**
    * Get today's application count
    */
   getTodayCount() {
+    this.checkAndResetDailyStats();
     return this.dailyStats.applied;
   }
 
@@ -126,6 +157,7 @@ class StateManager {
    * Check if daily limit reached
    */
   isLimitReached() {
+    this.checkAndResetDailyStats();
     return this.dailyStats.applied >= config.bot.dailyLimit;
   }
 
@@ -133,6 +165,7 @@ class StateManager {
    * Get remaining applications for today
    */
   getRemainingToday() {
+    this.checkAndResetDailyStats();
     return Math.max(0, config.bot.dailyLimit - this.dailyStats.applied);
   }
 
@@ -203,6 +236,7 @@ class StateManager {
    * Get statistics summary
    */
   getStats() {
+    this.checkAndResetDailyStats();
     return {
       totalApplied: this.appliedJobs.count,
       todayApplied: this.dailyStats.applied,

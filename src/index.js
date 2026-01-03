@@ -21,6 +21,11 @@ import {
   shouldBotRun,
   setStartBotCallback,
 } from './web/dashboard.js';
+import {
+  startScheduler,
+  setSchedulerBotCallback,
+  getSchedulerStatus,
+} from './services/schedulerService.js';
 
 const MAX_RETRIES = 5;
 const RETRY_DELAYS = [30000, 60000, 120000, 300000, 600000]; // 30s, 1m, 2m, 5m, 10m
@@ -120,6 +125,18 @@ async function main() {
     setStartBotCallback(() => {
       runBot();
     });
+    
+    // Set up the scheduler callback
+    setSchedulerBotCallback(() => {
+      runBot();
+    });
+    
+    // Start the auto-apply scheduler
+    const schedulerStatus = getSchedulerStatus();
+    if (schedulerStatus.enabled) {
+      console.log('\n⏰ Starting auto-apply scheduler...');
+      startScheduler();
+    }
     
     console.log('\n✅ Dashboard ready! Click "Start Bot" to begin applying.');
     console.log(`   Open http://localhost:${config.web.port} in your browser.\n`);

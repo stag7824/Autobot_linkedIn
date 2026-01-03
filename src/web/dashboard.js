@@ -19,6 +19,11 @@ import {
   loadSettings,
   applySettingsToConfig 
 } from '../services/settingsManager.js';
+import {
+  getSchedulerStatus,
+  toggleAutoApply,
+  updateSchedulerSettings,
+} from '../services/schedulerService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -70,6 +75,7 @@ function getRuntime() {
 app.get('/api/status', (req, res) => {
   const stats = stateManager.getStats();
   const aiStatus = getAIStatus();
+  const schedulerStatus = getSchedulerStatus();
   
   res.json({
     running: botRunning,
@@ -86,6 +92,7 @@ app.get('/api/status', (req, res) => {
       remaining: config.bot.dailyLimit - (stats.todayApplied || 0),
     },
     ai: aiStatus,
+    scheduler: schedulerStatus,
     config: {
       headless: config.bot.headless,
       environment: config.env.nodeEnv,
@@ -242,6 +249,78 @@ app.patch('/api/settings/:key', (req, res) => {
     updateSettings(settings);
     applySettingsToConfig(config);
     res.json({ success: true, key, value });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SCHEDULER API
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get scheduler status
+app.get('/api/scheduler', (req, res) => {
+  const status = getSchedulerStatus();
+  res.json(status);
+});
+
+// Toggle auto-apply on/off
+app.post('/api/scheduler/toggle', (req, res) => {
+  try {
+    const { enabled } = req.body;
+    const nextRunTime = toggleAutoApply(enabled);
+    res.json({
+      success: true,
+      enabled,
+      nextRunTime: nextRunTime ? nextRunTime.toISOString() : null,
+      message: enabled ? 'Auto-apply enabled' : 'Auto-apply disabled',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Update scheduler settings
+app.post('/api/scheduler/settings', (req, res) => {
+  try {
+    const { startHour, endHour, enabled } = req.body;
+    const nextRunTime = updateSchedulerSettings({ 
+      autoApplyStartHour: startHour, 
+      autoApplyEndHour: endHour,
+      autoApplyEnabled: enabled,
+    });
+    const status = getSchedulerStatus();
+    res.json({
+      success: true,
+      ...status,
+      message: 'Scheduler settings updated',
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POCKETBASE API
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { testConnection as testPocketbase, getRemoteStats } from '../services/pocketbaseService.js';
+
+// Test Pocketbase connection
+app.get('/api/pocketbase/test', async (req, res) => {
+  try {
+    const result = await testPocketbase();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get Pocketbase stats
+app.get('/api/pocketbase/stats', async (req, res) => {
+  try {
+    const stats = await getRemoteStats();
+    res.json(stats);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
