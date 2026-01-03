@@ -215,8 +215,18 @@ app.post('/api/session/clear-lock', (req, res) => {
       ? join(process.env.SAVE_PATH, 'session')
       : './data/session';
     
-    const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    // All Chrome lock files
+    const lockFiles = [
+      'SingletonLock', 
+      'SingletonSocket', 
+      'SingletonCookie',
+      'DevToolsActivePort',
+      'RunningChromeVersion'
+    ];
     let cleared = [];
+    let errors = [];
+    
+    console.log(`Clearing session lock files from: ${sessionDir}`);
     
     for (const file of lockFiles) {
       const filePath = join(sessionDir, file);
@@ -224,19 +234,68 @@ app.post('/api/session/clear-lock', (req, res) => {
         if (fs.existsSync(filePath)) {
           fs.unlinkSync(filePath);
           cleared.push(file);
+          console.log(`  ✓ Deleted: ${file}`);
         }
       } catch (e) {
-        // Ignore individual file errors
+        errors.push(`${file}: ${e.message}`);
+        console.log(`  ✗ Failed to delete ${file}: ${e.message}`);
       }
     }
     
+    // Also try to delete any lock directories in Default profile
+    const defaultLockDir = join(sessionDir, 'Default', 'Lock');
+    try {
+      if (fs.existsSync(defaultLockDir)) {
+        fs.unlinkSync(defaultLockDir);
+        cleared.push('Default/Lock');
+        console.log('  ✓ Deleted: Default/Lock');
+      }
+    } catch (e) {
+      // Ignore
+    }
+    
+    const message = cleared.length > 0 
+      ? `Cleared: ${cleared.join(', ')}` 
+      : 'No lock files found';
+    
+    console.log(`Session lock clear result: ${message}`);
+    
     res.json({ 
       success: true, 
-      message: cleared.length > 0 
-        ? `Cleared: ${cleared.join(', ')}` 
-        : 'No lock files found'
+      message,
+      cleared,
+      errors: errors.length > 0 ? errors : undefined
     });
   } catch (error) {
+    console.error('Failed to clear session lock:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Hard reset session - delete entire session directory (will require re-login)
+app.post('/api/session/hard-reset', (req, res) => {
+  try {
+    const sessionDir = process.env.SAVE_PATH 
+      ? join(process.env.SAVE_PATH, 'session')
+      : './data/session';
+    
+    console.log(`Hard resetting session directory: ${sessionDir}`);
+    
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+      console.log('Session directory deleted');
+    }
+    
+    // Recreate empty directory
+    fs.mkdirSync(sessionDir, { recursive: true });
+    console.log('Session directory recreated');
+    
+    res.json({ 
+      success: true, 
+      message: 'Session completely reset. You will need to log in to LinkedIn again.'
+    });
+  } catch (error) {
+    console.error('Failed to hard reset session:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -569,7 +628,10 @@ const dashboardHTML = `
         </div>
         <button class="btn btn-start" id="startBtn" onclick="startBot()" style="display: none;">▶️ Start Bot</button>
         <button class="btn btn-stop" id="stopBtn" onclick="stopBot()" style="display: none;">⏹️ Stop Bot</button>
-        <button class="btn" onclick="clearSessionLock()" style="background: #f59e0b; margin-top: 10px;">🔓 Clear Session Lock</button>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+          <button class="btn" onclick="clearSessionLock()" style="background: #f59e0b; flex: 1;">🔓 Clear Lock</button>
+          <button class="btn" onclick="hardResetSession()" style="background: #ef4444; flex: 1;">🗑️ Hard Reset</button>
+        </div>
       </div>
       
       <!-- Today's Applications -->
@@ -819,6 +881,19 @@ const dashboardHTML = `
         alert(data.message || (data.success ? 'Lock cleared!' : 'Failed to clear lock'));
       } catch (err) {
         alert('Failed to clear session lock');
+      }
+    }
+    
+    async function hardResetSession() {
+      if (!confirm('⚠️ This will delete all session data!\\n\\nYou will need to log in to LinkedIn again.\\n\\nContinue?')) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/session/hard-reset', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || (data.success ? 'Session reset!' : 'Failed to reset session'));
+      } catch (err) {
+        alert('Failed to hard reset session');
       }
     }
     
