@@ -12,22 +12,34 @@ import config from '../config/index.js';
  * Send notification to ntfy.sh
  */
 async function sendNotification(title, message, priority = 'default', tags = []) {
+  console.log(`📢 Notification: ${title} - ${message}`);
+  
   if (!config.notifications.enabled || !config.notifications.ntfyUrl) {
+    console.log(`   ⚠️ Notifications disabled (enabled: ${config.notifications.enabled}, url: ${config.notifications.ntfyUrl ? 'set' : 'not set'})`);
     return;
   }
 
   try {
-    await fetch(config.notifications.ntfyUrl, {
+    // Remove emojis from title (headers must be ASCII)
+    const asciiTitle = title.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim();
+    
+    const response = await fetch(config.notifications.ntfyUrl, {
       method: 'POST',
       headers: {
-        'Title': title,
+        'Title': asciiTitle || 'LinkedIn Bot',
         'Priority': priority,
         'Tags': tags.join(','),
       },
       body: message,
     });
+    
+    if (response.ok) {
+      console.log(`   ✅ Notification sent to ntfy`);
+    } else {
+      console.log(`   ❌ Notification failed: ${response.status}`);
+    }
   } catch (error) {
-    // Silently fail - don't interrupt the bot for notification errors
+    console.log(`   ❌ Notification error: ${error.message}`);
   }
 }
 
