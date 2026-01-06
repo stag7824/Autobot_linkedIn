@@ -9,7 +9,7 @@
 import { getSettings } from './settingsManager.js';
 
 const POCKETBASE_URL = process.env.POCKETBASE_URL || 'https://pocket.bugbrewery.tech';
-const COLLECTION_NAME = 'job_applications';
+const COLLECTION_NAME = process.env.POCKETBASE_COLLECTION_NAME || 'job_applications';
 
 let authToken = null;
 let authExpiry = null;
