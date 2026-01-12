@@ -256,6 +256,94 @@ INSTRUCTIONS:
 }
 
 /**
+ * Currency conversion rates (approximate)
+ * Updated periodically - these are rough estimates for job applications
+ */
+const CURRENCY_RATES = {
+  HUF_TO_EUR: 0.0025,  // 1 HUF ≈ 0.0025 EUR (400 HUF = 1 EUR)
+  HUF_TO_USD: 0.0027,  // 1 HUF ≈ 0.0027 USD (370 HUF = 1 USD)
+  EUR_TO_USD: 1.08,    // 1 EUR ≈ 1.08 USD
+  EUR_TO_HUF: 400,     // 1 EUR ≈ 400 HUF
+  USD_TO_EUR: 0.93,    // 1 USD ≈ 0.93 EUR
+  USD_TO_HUF: 370,     // 1 USD ≈ 370 HUF
+};
+
+/**
+ * Convert salary to target currency and period
+ * @param {number} amount - The salary amount
+ * @param {string} fromCurrency - Source currency (HUF, EUR, USD)
+ * @param {string} toCurrency - Target currency (HUF, EUR, USD)
+ * @param {string} fromPeriod - Source period (monthly, annual)
+ * @param {string} toPeriod - Target period (monthly, annual)
+ * @returns {number} Converted salary rounded to nearest whole number
+ */
+function convertSalary(amount, fromCurrency, toCurrency, fromPeriod = 'monthly', toPeriod = 'annual') {
+  let converted = amount;
+  
+  // Step 1: Convert period (monthly to annual or vice versa)
+  if (fromPeriod === 'monthly' && toPeriod === 'annual') {
+    converted = converted * 12;
+  } else if (fromPeriod === 'annual' && toPeriod === 'monthly') {
+    converted = converted / 12;
+  }
+  
+  // Step 2: Convert currency
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  
+  if (from === to) {
+    return Math.round(converted);
+  }
+  
+  const rateKey = `${from}_TO_${to}`;
+  if (CURRENCY_RATES[rateKey]) {
+    converted = converted * CURRENCY_RATES[rateKey];
+  } else {
+    // If no direct rate, convert through EUR
+    const toEurKey = `${from}_TO_EUR`;
+    const fromEurKey = `EUR_TO_${to}`;
+    if (CURRENCY_RATES[toEurKey] && CURRENCY_RATES[fromEurKey]) {
+      converted = converted * CURRENCY_RATES[toEurKey] * CURRENCY_RATES[fromEurKey];
+    }
+  }
+  
+  return Math.round(converted);
+}
+
+/**
+ * Parse salary question to determine target currency and period
+ * @param {string} question - The salary question
+ * @returns {{ currency: string, period: string }}
+ */
+function parseSalaryQuestion(question) {
+  const q = question.toLowerCase();
+  
+  // Detect target currency from question
+  let currency = 'USD'; // default
+  if (q.includes('euro') || q.includes('eur') || q.includes('€')) {
+    currency = 'EUR';
+  } else if (q.includes('huf') || q.includes('forint') || q.includes('ft')) {
+    currency = 'HUF';
+  } else if (q.includes('usd') || q.includes('dollar') || q.includes('$')) {
+    currency = 'USD';
+  } else if (q.includes('gbp') || q.includes('pound') || q.includes('£')) {
+    currency = 'GBP';
+  }
+  
+  // Detect target period from question
+  let period = 'annual'; // default for job applications
+  if (q.includes('month') || q.includes('per month') || q.includes('/month') || q.includes('monthly')) {
+    period = 'monthly';
+  } else if (q.includes('annual') || q.includes('year') || q.includes('per annum') || q.includes('/year') || q.includes('yearly')) {
+    period = 'annual';
+  } else if (q.includes('hour') || q.includes('hourly') || q.includes('/hr')) {
+    period = 'hourly';
+  }
+  
+  return { currency, period };
+}
+
+/**
  * Smart answer for common application questions
  */
 export function getPresetAnswer(question) {
@@ -291,18 +379,32 @@ export function getPresetAnswer(question) {
     }
   }
 
-  // Salary questions
-  if (q.includes('salary') || q.includes('compensation') || q.includes('pay')) {
-    if (q.includes('expected') || q.includes('desired') || q.includes('requirement')) {
-      // Return salary with currency if specified (e.g., "950000 HUF")
-      if (application.salaryCurrency && application.salaryCurrency !== 'USD') {
-        return `${application.desiredSalary} ${application.salaryCurrency}`;
-      }
-      return application.desiredSalary.toString();
-    }
+  // Smart salary handling with currency and period conversion
+  if (q.includes('salary') || q.includes('compensation') || q.includes('pay') || q.includes('earning')) {
+    const { currency: targetCurrency, period: targetPeriod } = parseSalaryQuestion(question);
+    const sourceCurrency = application.salaryCurrency || 'HUF';
+    const sourcePeriod = 'monthly'; // User's salary is monthly
+    
+    let baseSalary;
     if (q.includes('current')) {
-      return application.currentSalary.toString();
+      baseSalary = application.currentSalary || 0;
+    } else {
+      // Expected/desired salary
+      baseSalary = application.desiredSalary || 0;
     }
+    
+    // Convert to target currency and period
+    const convertedSalary = convertSalary(
+      baseSalary,
+      sourceCurrency,
+      targetCurrency,
+      sourcePeriod,
+      targetPeriod
+    );
+    
+    console.log(`   💰 Salary conversion: ${baseSalary} ${sourceCurrency}/${sourcePeriod} → ${convertedSalary} ${targetCurrency}/${targetPeriod}`);
+    
+    return convertedSalary.toString();
   }
 
   // Notice period

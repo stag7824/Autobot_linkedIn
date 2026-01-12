@@ -19,7 +19,9 @@ import {
   getPresetAnswer,
   checkJobMatch,
   getAIStatus,
+  setCurrentJobId,
 } from '../services/aiService.js';
+import * as jobLogger from '../services/jobLogger.js';
 import {
   notifyApplicationSuccess,
   notifyApplicationError,
@@ -443,10 +445,15 @@ export class LinkedInBot {
     // Initialize application data tracking
     this.resetApplicationData(jobId, title, company);
     this.logAction('application_started', { jobId, title, company, href });
+    
+    // Initialize job logger for detailed logging
+    const fullUrl = `https://www.linkedin.com/jobs/view/${jobId}`;
+    jobLogger.startJobLog(jobId, title, company, fullUrl);
+    setCurrentJobId(jobId);
+    jobLogger.log(jobId, `Application started`);
 
     try {
       // Navigate to job page - use direct job view URL
-      const fullUrl = `https://www.linkedin.com/jobs/view/${jobId}`;
       console.log(`   Navigating to: ${fullUrl}`);
       
       await this.page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -582,11 +589,17 @@ export class LinkedInBot {
           this.logAction('application_completed', { success: true });
         }
         
+        // Finalize job log
+        jobLogger.logSuccess(jobId, `Application submitted successfully`);
+        const logText = jobLogger.finalizeJobLog(jobId, 'SUCCESS');
+        setCurrentJobId(null);
+        
         stateManager.addAppliedJob(jobId, { 
           title, 
           company, 
           url: fullUrl,
           applicationData: this.applicationData,
+          logText, // Detailed logs for Pocketbase
         });
         this.sessionStats.applied++;
         console.log(`✅ Successfully applied to: ${title}`);
@@ -600,6 +613,11 @@ export class LinkedInBot {
           this.logAction('application_failed', { reason: 'incomplete' });
         }
         
+        // Finalize job log with failure
+        jobLogger.logError(jobId, 'Application incomplete', 'Could not complete all steps');
+        const logText = jobLogger.finalizeJobLog(jobId, 'FAILED', 'Application incomplete');
+        setCurrentJobId(null);
+        
         await this.debugSnapshot('application_failed');
         this.sessionStats.failed++;
         stateManager.incrementFailed();
@@ -607,6 +625,12 @@ export class LinkedInBot {
       }
     } catch (error) {
       console.error(`❌ Error applying to ${title}:`, error.message);
+      
+      // Finalize job log with error
+      jobLogger.logError(jobId, error.message, 'Exception during application');
+      jobLogger.finalizeJobLog(jobId, 'ERROR', error.message);
+      setCurrentJobId(null);
+      
       await this.debugSnapshot('error_' + error.message.substring(0, 20).replace(/\s+/g, '_'));
       stateManager.logError(error, { jobId, title, company });
       this.sessionStats.failed++;
@@ -730,9 +754,11 @@ export class LinkedInBot {
   async handleEasyApplyModal() {
     const maxSteps = 10;
     let step = 0;
+    const jobId = this.applicationData?.jobId;
 
     console.log('📝 Starting Easy Apply modal handler...');
     this.logAction('modal_started', { maxSteps });
+    if (jobId) jobLogger.logSection(jobId, 'Easy Apply Modal');
 
     while (step < maxSteps) {
       step++;
@@ -825,6 +851,9 @@ export class LinkedInBot {
         return 'Unknown modal state';
       });
       console.log(`📋 Modal state: ${modalText}`);
+      
+      // Log step to job logger
+      if (jobId) jobLogger.logStep(jobId, step, maxSteps, modalText);
 
       // Check for success
       if (await this.checkApplicationSuccess()) {
@@ -1014,6 +1043,7 @@ export class LinkedInBot {
    * Handle text input field with potential autocomplete (like location/city)
    */
   async handleTextInput(input, label) {
+    const jobId = this.applicationData?.jobId;
     const currentValue = await this.page.evaluate(el => el.value, input);
     
     // Check if input is in a disabled/readonly state
@@ -1026,14 +1056,30 @@ export class LinkedInBot {
     if (currentValue) {
       console.log(`   ✓ Already filled: ${label} = "${currentValue.substring(0, 30)}"`);
       this.logFormField('text_input', label, currentValue, 'already_filled');
+      if (jobId) jobLogger.logFormField(jobId, { fieldType: 'text_input', label, currentValue, action: 'already_filled' });
       return;
     }
 
-    // Get appropriate answer for this field
-    const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
+    // Get appropriate answer for this field - check preset first
+    const presetAnswer = getPresetAnswer(label);
+    let answer = presetAnswer;
+    
+    // Log preset answer if used
+    if (presetAnswer) {
+      if (jobId) jobLogger.logAIRequest(jobId, {
+        question: label,
+        questionType: 'text',
+        presetAnswer,
+      });
+    } else {
+      // Fall back to AI
+      answer = await answerQuestion(label, null, this.getJobContext());
+    }
+    
     if (!answer) {
       console.log(`   ⚠️ No answer found for: ${label}`);
       this.logFormField('text_input', label, null, 'no_answer');
+      if (jobId) jobLogger.logWarning(jobId, `No answer found for: ${label}`);
       return;
     }
 
@@ -1120,6 +1166,8 @@ export class LinkedInBot {
    * Handle dropdown/select field
    */
   async handleDropdown(select, label) {
+    const jobId = this.applicationData?.jobId;
+    
     // Get current selection
     const currentSelection = await this.page.evaluate(el => {
       const selectedOption = el.options[el.selectedIndex];
@@ -1137,12 +1185,26 @@ export class LinkedInBot {
     if (currentSelection && !currentSelection.toLowerCase().includes('select') && options.length > 1) {
       console.log(`   ✓ Already selected: ${label} = "${currentSelection}"`);
       this.logFormField('dropdown', label, currentSelection, 'already_selected', optionTexts);
+      if (jobId) jobLogger.logFormField(jobId, { fieldType: 'dropdown', label, currentValue: currentSelection, action: 'already_selected' });
       return;
     }
 
     if (options.length <= 1) return;
 
-    const answer = getPresetAnswer(label) || await answerQuestion(label, optionTexts, this.getJobContext());
+    // Check preset first
+    const presetAnswer = getPresetAnswer(label);
+    let answer = presetAnswer;
+    
+    if (presetAnswer) {
+      if (jobId) jobLogger.logAIRequest(jobId, {
+        question: label,
+        questionType: 'multiple_choice',
+        options: optionTexts,
+        presetAnswer,
+      });
+    } else {
+      answer = await answerQuestion(label, optionTexts, this.getJobContext());
+    }
     
     if (answer) {
       // Find best matching option
@@ -1172,6 +1234,8 @@ export class LinkedInBot {
    * Handle radio button group
    */
   async handleRadioButtons(container, radios, label) {
+    const jobId = this.applicationData?.jobId;
+    
     // Check if already selected
     const isChecked = await this.page.evaluate(
       els => els.some(el => el.checked),
@@ -1193,10 +1257,24 @@ export class LinkedInBot {
       }, radios, radioLabels);
       console.log(`   ✓ Already answered: ${label}`);
       this.logFormField('radio', label, checkedLabel, 'already_selected', radioLabels);
+      if (jobId) jobLogger.logFormField(jobId, { fieldType: 'radio', label, currentValue: checkedLabel, action: 'already_selected' });
       return;
     }
 
-    const answer = getPresetAnswer(label) || await answerQuestion(label, radioLabels, this.getJobContext());
+    // Check preset first
+    const presetAnswer = getPresetAnswer(label);
+    let answer = presetAnswer;
+    
+    if (presetAnswer) {
+      if (jobId) jobLogger.logAIRequest(jobId, {
+        question: label,
+        questionType: 'multiple_choice',
+        options: radioLabels,
+        presetAnswer,
+      });
+    } else {
+      answer = await answerQuestion(label, radioLabels, this.getJobContext());
+    }
     
     if (answer) {
       // Find matching radio button
@@ -1209,6 +1287,7 @@ export class LinkedInBot {
           await radios[i].click();
           console.log(`   ✅ Selected radio: ${label} = "${radioLabel}"`);
           this.logFormField('radio', label, radioLabel, 'selected', radioLabels);
+          if (jobId) jobLogger.logFormField(jobId, { fieldType: 'radio', label, newValue: radioLabel, action: 'selected' });
           return;
         }
       }

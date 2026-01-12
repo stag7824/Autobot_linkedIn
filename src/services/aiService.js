@@ -9,6 +9,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { OpenRouter } from '@openrouter/sdk';
 import config, { getUserProfile } from '../config/index.js';
+import * as jobLogger from './jobLogger.js';
 
 // AI providers
 let geminiModel = null;
@@ -18,6 +19,16 @@ let openrouterClient = null;
 let activeProvider = null;
 let geminiAvailable = false;
 let openrouterAvailable = false;
+
+// Current job ID for logging
+let currentJobId = null;
+
+/**
+ * Set the current job ID for logging purposes
+ */
+export function setCurrentJobId(jobId) {
+  currentJobId = jobId;
+}
 
 /**
  * Initialize AI providers (Gemini primary, OpenRouter backup)
@@ -267,7 +278,28 @@ INSTRUCTIONS:
 8. For visa/authorization questions, answer honestly based on the profile.`;
   }
 
-  const answer = await callAI(prompt);
+  let answer = null;
+  let error = null;
+  
+  try {
+    answer = await callAI(prompt);
+  } catch (e) {
+    error = e.message;
+  }
+  
+  // Log the AI request to job logger
+  if (currentJobId) {
+    jobLogger.logAIRequest(currentJobId, {
+      question,
+      questionType: options ? 'multiple_choice' : 'text',
+      options,
+      provider: activeProvider,
+      prompt,
+      response: answer,
+      error,
+    });
+  }
+  
   if (answer) {
     console.log(`🤖 AI answered (${activeProvider}): "${question.substring(0, 40)}..." → "${answer.substring(0, 40)}..."`);
   }
@@ -422,6 +454,74 @@ INSTRUCTIONS:
 }
 
 /**
+ * Currency conversion rates (approximate)
+ */
+const CURRENCY_RATES = {
+  HUF_TO_EUR: 0.0025,  // 1 HUF ≈ 0.0025 EUR (400 HUF = 1 EUR)
+  HUF_TO_USD: 0.0027,  // 1 HUF ≈ 0.0027 USD (370 HUF = 1 USD)
+  EUR_TO_USD: 1.08,
+  EUR_TO_HUF: 400,
+  USD_TO_EUR: 0.93,
+  USD_TO_HUF: 370,
+};
+
+/**
+ * Convert salary to target currency and period
+ */
+function convertSalary(amount, fromCurrency, toCurrency, fromPeriod = 'monthly', toPeriod = 'annual') {
+  let converted = amount;
+  
+  // Step 1: Convert period
+  if (fromPeriod === 'monthly' && toPeriod === 'annual') {
+    converted = converted * 12;
+  } else if (fromPeriod === 'annual' && toPeriod === 'monthly') {
+    converted = converted / 12;
+  }
+  
+  // Step 2: Convert currency
+  const from = fromCurrency.toUpperCase();
+  const to = toCurrency.toUpperCase();
+  
+  if (from === to) return Math.round(converted);
+  
+  const rateKey = `${from}_TO_${to}`;
+  if (CURRENCY_RATES[rateKey]) {
+    converted = converted * CURRENCY_RATES[rateKey];
+  }
+  
+  return Math.round(converted);
+}
+
+/**
+ * Parse salary question to determine target currency and period
+ */
+function parseSalaryQuestion(question) {
+  const q = question.toLowerCase();
+  
+  // Detect target currency
+  let currency = null; // null means use source currency
+  if (q.includes('euro') || q.includes('eur') || q.includes('€')) {
+    currency = 'EUR';
+  } else if (q.includes('huf') || q.includes('forint') || q.includes('ft')) {
+    currency = 'HUF';
+  } else if (q.includes('usd') || q.includes('dollar') || q.includes('$')) {
+    currency = 'USD';
+  } else if (q.includes('gbp') || q.includes('pound') || q.includes('£')) {
+    currency = 'GBP';
+  }
+  
+  // Detect target period
+  let period = 'annual'; // default for job applications
+  if (q.includes('month') || q.includes('per month') || q.includes('/month') || q.includes('monthly')) {
+    period = 'monthly';
+  } else if (q.includes('annual') || q.includes('year') || q.includes('per annum') || q.includes('/year') || q.includes('yearly')) {
+    period = 'annual';
+  }
+  
+  return { currency, period };
+}
+
+/**
  * Smart answer for common application questions (no AI needed)
  */
 export function getPresetAnswer(question) {
@@ -439,16 +539,15 @@ export function getPresetAnswer(question) {
   
   // Email - but NOT for recommender/referral questions
   if (q.includes('email')) {
-    // Skip if asking about recommender/referral email
     if (q.includes('recommend') || q.includes('referr') || q.includes('employee') || q.includes('refer')) {
-      return '';  // Leave empty - not recommended by anyone
+      return '';
     }
     return config.auth.email;
   }
   
   // Recommender/Referral questions - leave empty
   if (q.includes('recommend') || q.includes('referr') || q.includes('referred by')) {
-    return '';  // Not recommended by anyone
+    return '';
   }
 
   // Location questions
@@ -470,29 +569,47 @@ export function getPresetAnswer(question) {
     }
   }
 
-  // Salary questions
-  if (q.includes('salary') || q.includes('compensation') || q.includes('pay') || q.includes('bérigény')) {
-    // Check if field expects a number only (usually has 'HUF' or currency in label already)
-    const expectsNumberOnly = q.includes('huf') || q.includes('(huf)') || q.includes('ft)') || q.includes('forint');
+  // SMART SALARY HANDLING with currency and period conversion
+  if (q.includes('salary') || q.includes('compensation') || q.includes('pay') || q.includes('earning') || q.includes('bérigény')) {
+    const { currency: targetCurrency, period: targetPeriod } = parseSalaryQuestion(question);
+    const sourceCurrency = application.salaryCurrency || 'HUF';
+    const sourcePeriod = 'monthly'; // User's salary is monthly
     
-    // Max salary / upper range
-    if (q.includes('max') || q.includes('maximum') || q.includes('upper') || q.includes('sávos')) {
-      const maxSalary = application.maxSalary || Math.round(application.desiredSalary * 1.25);
-      return expectsNumberOnly ? maxSalary.toString() : `${maxSalary}`;
-    }
+    let baseSalary;
+    let isMaxSalary = false;
     
-    // Expected/desired/minimum salary
-    if (q.includes('expected') || q.includes('desired') || q.includes('requirement') || q.includes('min') || q.includes('base')) {
-      return expectsNumberOnly ? application.desiredSalary.toString() : application.desiredSalary.toString();
-    }
-    
-    // Current salary
+    // Determine which salary to use
     if (q.includes('current')) {
-      return application.currentSalary.toString();
+      baseSalary = application.currentSalary || 0;
+    } else if (q.includes('max') || q.includes('maximum') || q.includes('upper')) {
+      baseSalary = application.maxSalary || Math.round(application.desiredSalary * 1.25);
+      isMaxSalary = true;
+    } else {
+      baseSalary = application.desiredSalary || 0;
     }
     
-    // Default to desired salary for generic salary questions
-    return application.desiredSalary.toString();
+    // If target currency detected, convert
+    if (targetCurrency && targetCurrency !== sourceCurrency) {
+      const convertedSalary = convertSalary(
+        baseSalary,
+        sourceCurrency,
+        targetCurrency,
+        sourcePeriod,
+        targetPeriod
+      );
+      console.log(`   💰 Salary conversion: ${baseSalary} ${sourceCurrency}/${sourcePeriod} → ${convertedSalary} ${targetCurrency}/${targetPeriod}`);
+      return convertedSalary.toString();
+    }
+    
+    // No currency conversion needed, but may need period conversion
+    if (targetPeriod === 'annual' && sourcePeriod === 'monthly') {
+      const annualSalary = baseSalary * 12;
+      console.log(`   💰 Salary (annual): ${baseSalary} ${sourceCurrency}/month → ${annualSalary} ${sourceCurrency}/year`);
+      return annualSalary.toString();
+    }
+    
+    // Return as-is
+    return baseSalary.toString();
   }
 
   // Notice period
@@ -542,6 +659,7 @@ export default {
   initializeAI,
   initializeGemini: initializeAI,
   getAIStatus,
+  setCurrentJobId,
   answerQuestion,
   extractSkillsFromJob,
   checkJobMatch,

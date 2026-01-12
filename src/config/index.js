@@ -241,7 +241,7 @@ const config = {
     // Production: 120-180 seconds (2-3 min) to stay under 5 RPM and 20 RPD
     // Development: 5-15 seconds for quick testing
     betweenApplications: isProduction 
-      ? { min: 120000, max: 180000 }  // 2-3 minutes in production
+      ? { min: 10000, max: 30000 }  // 10-30 seconds in production
       : { min: 5000, max: 15000 },     // 5-15 seconds in development
     typing: { min: 50, max: 150 },
     pageLoad: 5000,
@@ -321,6 +321,13 @@ export function validateConfig() {
 export function getUserProfile() {
   const { personal, application, resume, jobFilter } = config;
   
+  // Calculate approximate EUR/USD equivalents for AI context
+  const monthlyHUF = application.desiredSalary || 0;
+  const annualHUF = monthlyHUF * 12;
+  const monthlyEUR = Math.round(monthlyHUF * 0.0025); // ~400 HUF = 1 EUR
+  const annualEUR = monthlyEUR * 12;
+  const annualUSD = Math.round(annualEUR * 1.08);
+  
   return `
 Name: ${personal.firstName} ${personal.middleName} ${personal.lastName}
 Phone: ${personal.phoneNumber}
@@ -331,7 +338,16 @@ Education: ${jobFilter.hasMasters ? 'Masters Degree' : 'Bachelors Degree'}
 Visa Sponsorship Required: ${application.requireVisa}
 Citizenship Status: ${application.citizenshipStatus}
 Notice Period: ${application.noticePeriod} days
-Desired Salary: $${application.desiredSalary}
+
+SALARY INFORMATION (IMPORTANT - Convert correctly based on question!):
+- Current Salary: ${application.currentSalary} ${application.salaryCurrency}/month (currently unemployed/student if 0)
+- Desired Salary: ${application.desiredSalary} ${application.salaryCurrency}/month
+  → Monthly: ~${monthlyEUR} EUR | ~${Math.round(monthlyEUR * 1.08)} USD
+  → Annual: ~${annualEUR} EUR | ~${annualUSD} USD | ~${annualHUF} HUF
+- When asked for ANNUAL salary in EUR, answer: ${annualEUR}
+- When asked for ANNUAL salary in USD, answer: ${annualUSD}
+- When asked for MONTHLY salary in EUR, answer: ${monthlyEUR}
+
 Website: ${application.website}
 LinkedIn: ${application.linkedInUrl}
 

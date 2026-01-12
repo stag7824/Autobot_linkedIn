@@ -159,6 +159,7 @@ class StateManager {
       url: details.url,
       status: 'applied',
       applicationData: details.applicationData || {},
+      logText: details.logText || '', // Detailed text logs for debugging
     }).catch(err => {
       console.log('⚠️ Failed to save to Pocketbase:', err.message);
     });

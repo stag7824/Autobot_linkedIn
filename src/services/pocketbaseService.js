@@ -65,20 +65,22 @@ export async function saveJobApplication(jobData) {
   if (!token) return null;
   
   try {
-    // Stringify applicationData for the text field
-    const dataString = jobData.applicationData 
+    // Use detailed text log if provided, otherwise stringify applicationData
+    const logText = jobData.logText || '';
+    const applicationDataString = jobData.applicationData 
       ? JSON.stringify(jobData.applicationData, null, 2) 
-      : '';
+      : '{}';
     
     const payload = {
-      job_id: jobData.jobId || '',
-      job_title: jobData.title || '',
-      company_name: jobData.company || '',
-      job_link: jobData.url || '',
+      job_id: String(jobData.jobId || ''),
+      job_title: String(jobData.title || '').substring(0, 500), // Limit title length
+      company_name: String(jobData.company || '').substring(0, 200),
+      job_link: String(jobData.url || ''),
       status: jobData.status || 'applied',
-      application_data: jobData.applicationData || {},
-      // Complete application data as stringified JSON for text field
-      data: dataString,
+      // Send stringified JSON for application_data field
+      application_data: applicationDataString,
+      // Store detailed text logs in the data field
+      data: logText || applicationDataString,
     };
     
     const response = await fetch(`${POCKETBASE_URL}/api/collections/${COLLECTION_NAME}/records`, {
@@ -91,8 +93,10 @@ export async function saveJobApplication(jobData) {
     });
     
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || 'Failed to save job application');
+      const errorData = await response.json();
+      // Log full error details for debugging
+      console.error('❌ Pocketbase validation errors:', JSON.stringify(errorData, null, 2));
+      throw new Error(errorData.message || JSON.stringify(errorData.data) || 'Failed to save job application');
     }
     
     const record = await response.json();
