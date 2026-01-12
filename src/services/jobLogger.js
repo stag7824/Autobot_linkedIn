@@ -140,12 +140,9 @@ export function logAIRequest(jobId, {
     entry += `\n    │ Provider: ${provider}`;
     
     if (prompt) {
-      // Truncate very long prompts but keep enough context
-      const truncatedPrompt = prompt.length > 500 
-        ? prompt.substring(0, 500) + '\n    │   ... [truncated, total ' + prompt.length + ' chars]'
-        : prompt;
+      // Log full prompt - no truncation for debugging
       entry += `\n    │ ───── PROMPT ─────`;
-      truncatedPrompt.split('\n').forEach(line => {
+      prompt.split('\n').forEach(line => {
         entry += `\n    │   ${line}`;
       });
     }

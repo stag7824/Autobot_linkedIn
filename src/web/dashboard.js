@@ -24,6 +24,7 @@ import {
   toggleAutoApply,
   updateSchedulerSettings,
 } from '../services/schedulerService.js';
+import * as answerCache from '../services/answerCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -130,6 +131,81 @@ app.get('/api/logs', (req, res) => {
     total: logs.length,
     logs: logs.slice(-limit),
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANSWER CACHE & QUESTIONS API - Review, correct, and manage learned answers
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Get cache stats
+app.get('/api/answers/stats', (req, res) => {
+  const stats = answerCache.getCacheStats();
+  res.json(stats);
+});
+
+// Get all cached answers (the main config/learning view)
+app.get('/api/answers/cached', (req, res) => {
+  const answers = answerCache.getAllCachedAnswers();
+  res.json({
+    total: answers.length,
+    answers: answers.sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0)),
+  });
+});
+
+// Get unique questions from history (grouped by question)
+app.get('/api/answers/unique', (req, res) => {
+  const questions = answerCache.getUniqueQuestions();
+  res.json({ questions });
+});
+
+// Get question history (raw log of all answers)
+app.get('/api/answers/history', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const history = answerCache.getQuestionHistory(limit);
+  res.json({ total: history.length, history });
+});
+
+// UPDATE/CORRECT an answer (THIS IS THE KEY FEATURE!)
+app.post('/api/answers/update', (req, res) => {
+  const { question, answer } = req.body;
+  if (!question || answer === undefined) {
+    return res.status(400).json({ error: 'question and answer are required' });
+  }
+  
+  const success = answerCache.updateAnswer(question, answer);
+  if (success) {
+    res.json({ success: true, message: `Answer updated and verified for: "${question.substring(0, 50)}..."` });
+  } else {
+    res.status(500).json({ error: 'Failed to update answer' });
+  }
+});
+
+// DELETE an answer from cache
+app.delete('/api/answers/delete', (req, res) => {
+  const { question } = req.body;
+  if (!question) {
+    return res.status(400).json({ error: 'question is required' });
+  }
+  
+  const success = answerCache.deleteAnswer(question);
+  res.json({ success, message: success ? 'Answer deleted' : 'Answer not found' });
+});
+
+// Bulk import answers
+app.post('/api/answers/import', (req, res) => {
+  const { answers } = req.body;
+  if (!Array.isArray(answers)) {
+    return res.status(400).json({ error: 'answers must be an array of {question, answer} objects' });
+  }
+  
+  answerCache.importAnswers(answers);
+  res.json({ success: true, imported: answers.length });
+});
+
+// Export all answers (backup)
+app.get('/api/answers/export', (req, res) => {
+  const answers = answerCache.exportAnswers();
+  res.json({ answers });
 });
 
 // Update daily limit
@@ -613,6 +689,7 @@ const dashboardHTML = `
       <p class="subtitle">Automated Job Application Dashboard</p>
       <div style="margin-top: 15px;">
         <a href="/settings" class="nav-link">⚙️ Settings</a>
+        <a href="/answers" class="nav-link" style="margin-left: 15px;">📚 Answer Manager</a>
       </div>
     </header>
     
@@ -1673,6 +1750,260 @@ app.get('/', (req, res) => {
 // Serve settings page
 app.get('/settings', (req, res) => {
   res.send(settingsHTML);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANSWER MANAGER PAGE - Review and correct learned answers
+// ═══════════════════════════════════════════════════════════════════════════
+const answerManagerHTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Answer Manager - LinkedIn Bot</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: #1a1a2e; color: #eee; padding: 20px;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { color: #00d9ff; margin-bottom: 10px; }
+    .stats { 
+      display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .stat-card {
+      background: #16213e; padding: 15px 25px; border-radius: 10px;
+      border: 1px solid #0f3460;
+    }
+    .stat-card h3 { color: #888; font-size: 12px; text-transform: uppercase; }
+    .stat-card .value { font-size: 24px; font-weight: bold; color: #00d9ff; }
+    .tabs {
+      display: flex; gap: 10px; margin-bottom: 20px;
+    }
+    .tab {
+      padding: 10px 20px; background: #16213e; border: none; color: #888;
+      cursor: pointer; border-radius: 8px; font-size: 14px;
+    }
+    .tab.active { background: #0f3460; color: #00d9ff; }
+    .search-box {
+      width: 100%; padding: 12px 15px; background: #16213e; border: 1px solid #0f3460;
+      border-radius: 8px; color: #eee; font-size: 14px; margin-bottom: 20px;
+    }
+    .answer-list { display: flex; flex-direction: column; gap: 10px; }
+    .answer-item {
+      background: #16213e; border-radius: 10px; padding: 15px;
+      border: 1px solid #0f3460; transition: all 0.2s;
+    }
+    .answer-item:hover { border-color: #00d9ff; }
+    .answer-item.verified { border-left: 4px solid #00ff88; }
+    .question { color: #aaa; font-size: 14px; margin-bottom: 8px; }
+    .answer-row { display: flex; align-items: center; gap: 10px; }
+    .answer-input {
+      flex: 1; padding: 8px 12px; background: #0f3460; border: 1px solid #1a1a2e;
+      border-radius: 6px; color: #fff; font-size: 16px;
+    }
+    .btn {
+      padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+      font-size: 14px; transition: all 0.2s;
+    }
+    .btn-save { background: #00d9ff; color: #000; }
+    .btn-save:hover { background: #00b8d4; }
+    .btn-delete { background: #ff4757; color: #fff; }
+    .btn-delete:hover { background: #ff3344; }
+    .meta {
+      display: flex; gap: 15px; margin-top: 8px; font-size: 12px; color: #666;
+    }
+    .meta span { display: flex; align-items: center; gap: 5px; }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .badge-verified { background: #00ff8820; color: #00ff88; }
+    .badge-cached { background: #00d9ff20; color: #00d9ff; }
+    .badge-ai { background: #ff9f4320; color: #ff9f43; }
+    .badge-preset { background: #a29bfe20; color: #a29bfe; }
+    .nav { margin-bottom: 20px; }
+    .nav a { color: #00d9ff; text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+    .toast {
+      position: fixed; bottom: 20px; right: 20px; padding: 15px 25px;
+      background: #00ff88; color: #000; border-radius: 8px; display: none;
+      font-weight: 600;
+    }
+    .toast.show { display: block; animation: slideIn 0.3s ease; }
+    @keyframes slideIn { from { transform: translateY(100px); opacity: 0; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <nav class="nav"><a href="/">← Back to Dashboard</a></nav>
+    <h1>📚 Answer Manager</h1>
+    <p style="color: #888; margin-bottom: 20px;">Review and correct answers. Verified answers will be used for future applications.</p>
+    
+    <div class="stats" id="stats"></div>
+    
+    <div class="tabs">
+      <button class="tab active" onclick="loadAnswers('all')">All Answers</button>
+      <button class="tab" onclick="loadAnswers('verified')">✓ Verified</button>
+      <button class="tab" onclick="loadAnswers('ai')">🤖 AI Generated</button>
+      <button class="tab" onclick="loadHistory()">📋 History</button>
+    </div>
+    
+    <input type="text" class="search-box" placeholder="Search questions..." oninput="filterAnswers(this.value)">
+    
+    <div class="answer-list" id="answerList"></div>
+  </div>
+  
+  <div class="toast" id="toast">Saved!</div>
+  
+  <script>
+    let allAnswers = [];
+    let currentView = 'all';
+    
+    async function loadStats() {
+      const res = await fetch('/api/answers/stats');
+      const stats = await res.json();
+      document.getElementById('stats').innerHTML = \`
+        <div class="stat-card"><h3>Total Cached</h3><div class="value">\${stats.totalCached}</div></div>
+        <div class="stat-card"><h3>Verified</h3><div class="value">\${stats.verifiedAnswers}</div></div>
+        <div class="stat-card"><h3>Cache Hit Rate</h3><div class="value">\${stats.hitRate.toFixed(1)}%</div></div>
+        <div class="stat-card"><h3>Cache Hits</h3><div class="value">\${stats.cacheHits}</div></div>
+      \`;
+    }
+    
+    async function loadAnswers(filter = 'all') {
+      currentView = filter;
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event?.target?.classList.add('active');
+      
+      const res = await fetch('/api/answers/cached');
+      const data = await res.json();
+      allAnswers = data.answers;
+      
+      if (filter === 'verified') {
+        allAnswers = allAnswers.filter(a => a.verified);
+      } else if (filter === 'ai') {
+        allAnswers = allAnswers.filter(a => a.source === 'ai');
+      }
+      
+      renderAnswers(allAnswers);
+    }
+    
+    async function loadHistory() {
+      currentView = 'history';
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event?.target?.classList.add('active');
+      
+      const res = await fetch('/api/answers/history?limit=100');
+      const data = await res.json();
+      
+      document.getElementById('answerList').innerHTML = data.history.map(h => \`
+        <div class="answer-item">
+          <div class="question">\${escapeHtml(h.question)}</div>
+          <div class="answer-row">
+            <span style="font-size: 16px; color: #fff;">\${escapeHtml(h.answer)}</span>
+            <span class="badge badge-\${h.source}">\${h.source}</span>
+          </div>
+          <div class="meta">
+            <span>🏢 \${h.company || 'Unknown'}</span>
+            <span>💼 \${h.jobTitle || 'Unknown'}</span>
+            <span>🕐 \${new Date(h.timestamp).toLocaleString()}</span>
+          </div>
+        </div>
+      \`).join('');
+    }
+    
+    function renderAnswers(answers) {
+      document.getElementById('answerList').innerHTML = answers.map((a, i) => \`
+        <div class="answer-item \${a.verified ? 'verified' : ''}" data-index="\${i}">
+          <div class="question">\${escapeHtml(a.originalQuestion)}</div>
+          <div class="answer-row">
+            <input type="text" class="answer-input" value="\${escapeHtml(a.answer)}" data-question="\${escapeHtml(a.originalQuestion)}">
+            <button class="btn btn-save" onclick="saveAnswer(this)">Save</button>
+            <button class="btn btn-delete" onclick="deleteAnswer(this)">Delete</button>
+          </div>
+          <div class="meta">
+            <span class="badge badge-\${a.source}">\${a.source}</span>
+            \${a.verified ? '<span class="badge badge-verified">verified</span>' : ''}
+            <span>Used \${a.usageCount || 0}x</span>
+            <span>Type: \${a.fieldType || 'text'}</span>
+          </div>
+        </div>
+      \`).join('');
+    }
+    
+    function filterAnswers(query) {
+      const q = query.toLowerCase();
+      const filtered = allAnswers.filter(a => 
+        a.originalQuestion.toLowerCase().includes(q) || 
+        a.answer.toLowerCase().includes(q)
+      );
+      renderAnswers(filtered);
+    }
+    
+    async function saveAnswer(btn) {
+      const row = btn.closest('.answer-item');
+      const input = row.querySelector('.answer-input');
+      const question = input.dataset.question;
+      const answer = input.value;
+      
+      const res = await fetch('/api/answers/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, answer })
+      });
+      
+      if (res.ok) {
+        showToast('✓ Answer saved & verified!');
+        row.classList.add('verified');
+        loadStats();
+      }
+    }
+    
+    async function deleteAnswer(btn) {
+      const row = btn.closest('.answer-item');
+      const input = row.querySelector('.answer-input');
+      const question = input.dataset.question;
+      
+      if (!confirm('Delete this answer from cache?')) return;
+      
+      const res = await fetch('/api/answers/delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question })
+      });
+      
+      if (res.ok) {
+        row.remove();
+        showToast('Answer deleted');
+        loadStats();
+      }
+    }
+    
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+    
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    
+    // Load on start
+    loadStats();
+    loadAnswers();
+  </script>
+</body>
+</html>
+`;
+
+app.get('/answers', (req, res) => {
+  res.send(answerManagerHTML);
 });
 
 /**

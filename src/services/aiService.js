@@ -2,6 +2,7 @@
  * LinkedIn Easy Apply Bot - AI Service
  * 
  * Uses Google Gemini as primary, OpenRouter (Mimo) as backup.
+ * Answer Cache for learning from past answers.
  * 
  * @license MIT
  */
@@ -10,6 +11,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { OpenRouter } from '@openrouter/sdk';
 import config, { getUserProfile } from '../config/index.js';
 import * as jobLogger from './jobLogger.js';
+import * as answerCache from './answerCache.js';
 
 // AI providers
 let geminiModel = null;
@@ -218,11 +220,29 @@ async function callAI(prompt, retryCount = 0) {
 
 /**
  * Answer a question using AI based on user profile and job context
+ * Priority: 1) Cached/Verified answer 2) AI generated answer
  * @param {string} question - The question to answer
  * @param {string[]|null} options - Optional list of answer choices
  * @param {object} jobContext - Optional job context (title, company, description)
  */
 export async function answerQuestion(question, options = null, jobContext = null) {
+  // FIRST: Check answer cache for verified or previously used answers
+  const cached = answerCache.getCachedAnswer(question, options);
+  if (cached) {
+    // Log cache hit
+    if (currentJobId) {
+      jobLogger.logAIRequest(currentJobId, {
+        question,
+        questionType: options ? 'multiple_choice' : 'text',
+        options,
+        provider: `cache (${cached.source})`,
+        response: cached.answer,
+        cached: true,
+      });
+    }
+    return cached.answer;
+  }
+
   if (!activeProvider) return null;
 
   const userProfile = getUserProfile();
@@ -301,6 +321,8 @@ INSTRUCTIONS:
   }
   
   if (answer) {
+    // Cache the AI answer for future similar questions
+    answerCache.cacheAnswer(question, answer, 'ai', options ? 'choice' : 'text');
     console.log(`🤖 AI answered (${activeProvider}): "${question.substring(0, 40)}..." → "${answer.substring(0, 40)}..."`);
   }
   return answer;
@@ -557,9 +579,27 @@ export function getPresetAnswer(question) {
   if (q.includes('country')) return personal.country;
   if (q.includes('street') || q.includes('address')) return personal.street;
 
-  // Experience questions
+  // Experience questions - ONLY match general experience, not technology-specific
+  // Technology-specific questions like "years with React.js" should go to AI
   if (q.includes('years of experience') || q.includes('how many years')) {
-    return application.yearsOfExperience;
+    // Check if it's asking about a specific technology/skill
+    const techKeywords = [
+      'react', 'angular', 'vue', 'node', 'python', 'java', 'javascript', 'typescript',
+      'three.js', 'next.js', 'express', 'spring', 'django', 'flask', 'docker', 'kubernetes',
+      'aws', 'azure', 'gcp', 'sql', 'mongodb', 'postgres', 'redis', 'graphql', 'rest',
+      'aec', 'cad', 'bim', 'revit', 'unity', 'unreal', 'webgl', 'opengl', 'c++', 'c#',
+      'rust', 'go', 'swift', 'kotlin', 'flutter', 'mobile', 'ios', 'android', 'ml',
+      'ai', 'machine learning', 'deep learning', 'tensorflow', 'pytorch', 'data science',
+      'devops', 'ci/cd', 'jenkins', 'terraform', 'ansible', 'linux', 'agile', 'scrum'
+    ];
+    
+    const isTechSpecific = techKeywords.some(tech => q.includes(tech));
+    
+    // Only return preset for general experience questions
+    if (!isTechSpecific) {
+      return application.yearsOfExperience;
+    }
+    // Tech-specific questions will fall through to AI
   }
 
   // Visa questions

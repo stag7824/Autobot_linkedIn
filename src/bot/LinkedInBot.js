@@ -22,6 +22,7 @@ import {
   setCurrentJobId,
 } from '../services/aiService.js';
 import * as jobLogger from '../services/jobLogger.js';
+import * as answerCache from '../services/answerCache.js';
 import {
   notifyApplicationSuccess,
   notifyApplicationError,
@@ -1060,20 +1061,42 @@ export class LinkedInBot {
       return;
     }
 
-    // Get appropriate answer for this field - check preset first
-    const presetAnswer = getPresetAnswer(label);
-    let answer = presetAnswer;
+    // Get appropriate answer for this field
+    // Priority: 1) Cached/Verified answers 2) Preset answers 3) AI
+    let answer = null;
+    let answerSource = 'unknown';
     
-    // Log preset answer if used
-    if (presetAnswer) {
+    // 1. Check cache first (includes user-verified corrections)
+    const cached = answerCache.getCachedAnswer(label);
+    if (cached) {
+      answer = cached.answer;
+      answerSource = cached.source; // 'verified' or 'cached'
       if (jobId) jobLogger.logAIRequest(jobId, {
         question: label,
         questionType: 'text',
-        presetAnswer,
+        source: answerSource,
+        cachedAnswer: answer,
       });
-    } else {
-      // Fall back to AI
+    }
+    
+    // 2. Check preset answers (name, phone, basic info)
+    if (!answer) {
+      const presetAnswer = getPresetAnswer(label);
+      if (presetAnswer) {
+        answer = presetAnswer;
+        answerSource = 'preset';
+        if (jobId) jobLogger.logAIRequest(jobId, {
+          question: label,
+          questionType: 'text',
+          presetAnswer,
+        });
+      }
+    }
+    
+    // 3. Fall back to AI
+    if (!answer) {
       answer = await answerQuestion(label, null, this.getJobContext());
+      answerSource = 'ai';
     }
     
     if (!answer) {
@@ -1093,8 +1116,24 @@ export class LinkedInBot {
     await input.click({ clickCount: 3 });
     await randomSleep(200, 400);
     await input.type(answer, { delay: 80 });
-    console.log(`   ✅ Filled: ${label} = "${answer}"`);
+    console.log(`   ✅ Filled: ${label} = "${answer}" (${answerSource})`);
     this.logFormField('text_input', label, answer, 'typed');
+    
+    // Record to questions history for dashboard review
+    answerCache.recordToHistory({
+      question: label,
+      answer,
+      source: answerSource,
+      fieldType: 'text_input',
+      jobId,
+      company: this.applicationData?.company || '',
+      jobTitle: this.applicationData?.title || '',
+    });
+    
+    // Cache the answer if not already cached (for future applications)
+    if (answerSource !== 'verified' && answerSource !== 'cached') {
+      answerCache.cacheAnswer(label, answer, answerSource, 'text');
+    }
     
     // Handle autocomplete dropdown for location fields
     if (isLocationField) {
@@ -1191,19 +1230,43 @@ export class LinkedInBot {
 
     if (options.length <= 1) return;
 
-    // Check preset first
-    const presetAnswer = getPresetAnswer(label);
-    let answer = presetAnswer;
+    // Get appropriate answer - Priority: 1) Cache 2) Preset 3) AI
+    let answer = null;
+    let answerSource = 'unknown';
     
-    if (presetAnswer) {
+    // 1. Check cache first (includes user-verified corrections)
+    const cached = answerCache.getCachedAnswer(label, optionTexts);
+    if (cached) {
+      answer = cached.answer;
+      answerSource = cached.source;
       if (jobId) jobLogger.logAIRequest(jobId, {
         question: label,
         questionType: 'multiple_choice',
         options: optionTexts,
-        presetAnswer,
+        source: answerSource,
+        cachedAnswer: answer,
       });
-    } else {
+    }
+    
+    // 2. Check preset answers
+    if (!answer) {
+      const presetAnswer = getPresetAnswer(label);
+      if (presetAnswer) {
+        answer = presetAnswer;
+        answerSource = 'preset';
+        if (jobId) jobLogger.logAIRequest(jobId, {
+          question: label,
+          questionType: 'multiple_choice',
+          options: optionTexts,
+          presetAnswer,
+        });
+      }
+    }
+    
+    // 3. Fall back to AI
+    if (!answer) {
       answer = await answerQuestion(label, optionTexts, this.getJobContext());
+      answerSource = 'ai';
     }
     
     if (answer) {
@@ -1216,8 +1279,25 @@ export class LinkedInBot {
       
       if (matchOption && matchOption.value) {
         await select.select(matchOption.value);
-        console.log(`   ✅ Selected: ${label} = "${matchOption.text}"`);
+        console.log(`   ✅ Selected: ${label} = "${matchOption.text}" (${answerSource})`);
         this.logFormField('dropdown', label, matchOption.text, 'selected', optionTexts);
+        
+        // Record to history and cache
+        answerCache.recordToHistory({
+          question: label,
+          answer: matchOption.text,
+          source: answerSource,
+          fieldType: 'dropdown',
+          jobId,
+          company: this.applicationData?.company || '',
+          jobTitle: this.applicationData?.title || '',
+          options: optionTexts,
+        });
+        
+        // Cache if not already cached
+        if (answerSource !== 'verified' && answerSource !== 'cached') {
+          answerCache.cacheAnswer(label, matchOption.text, answerSource, 'choice');
+        }
       } else {
         // If no match, select first non-placeholder option
         const firstRealOption = options.find(o => o.value && !o.text.toLowerCase().includes('select'));
@@ -1225,6 +1305,18 @@ export class LinkedInBot {
           await select.select(firstRealOption.value);
           console.log(`   ⚡ Default selected: ${label} = "${firstRealOption.text}"`);
           this.logFormField('dropdown', label, firstRealOption.text, 'default_selected', optionTexts);
+          
+          // Record to history (but don't cache default selections)
+          answerCache.recordToHistory({
+            question: label,
+            answer: firstRealOption.text,
+            source: 'default',
+            fieldType: 'dropdown',
+            jobId,
+            company: this.applicationData?.company || '',
+            jobTitle: this.applicationData?.title || '',
+            options: optionTexts,
+          });
         }
       }
     }
@@ -1261,19 +1353,43 @@ export class LinkedInBot {
       return;
     }
 
-    // Check preset first
-    const presetAnswer = getPresetAnswer(label);
-    let answer = presetAnswer;
+    // Get appropriate answer - Priority: 1) Cache 2) Preset 3) AI
+    let answer = null;
+    let answerSource = 'unknown';
     
-    if (presetAnswer) {
+    // 1. Check cache first (includes user-verified corrections)
+    const cached = answerCache.getCachedAnswer(label, radioLabels);
+    if (cached) {
+      answer = cached.answer;
+      answerSource = cached.source;
       if (jobId) jobLogger.logAIRequest(jobId, {
         question: label,
         questionType: 'multiple_choice',
         options: radioLabels,
-        presetAnswer,
+        source: answerSource,
+        cachedAnswer: answer,
       });
-    } else {
+    }
+    
+    // 2. Check preset answers
+    if (!answer) {
+      const presetAnswer = getPresetAnswer(label);
+      if (presetAnswer) {
+        answer = presetAnswer;
+        answerSource = 'preset';
+        if (jobId) jobLogger.logAIRequest(jobId, {
+          question: label,
+          questionType: 'multiple_choice',
+          options: radioLabels,
+          presetAnswer,
+        });
+      }
+    }
+    
+    // 3. Fall back to AI
+    if (!answer) {
       answer = await answerQuestion(label, radioLabels, this.getJobContext());
+      answerSource = 'ai';
     }
     
     if (answer) {
@@ -1285,9 +1401,26 @@ export class LinkedInBot {
             (answer.toLowerCase() === 'yes' && radioLabel.toLowerCase().includes('yes')) ||
             (answer.toLowerCase() === 'no' && radioLabel.toLowerCase().includes('no'))) {
           await radios[i].click();
-          console.log(`   ✅ Selected radio: ${label} = "${radioLabel}"`);
+          console.log(`   ✅ Selected radio: ${label} = "${radioLabel}" (${answerSource})`);
           this.logFormField('radio', label, radioLabel, 'selected', radioLabels);
           if (jobId) jobLogger.logFormField(jobId, { fieldType: 'radio', label, newValue: radioLabel, action: 'selected' });
+          
+          // Record to history and cache
+          answerCache.recordToHistory({
+            question: label,
+            answer: radioLabel,
+            source: answerSource,
+            fieldType: 'radio',
+            jobId,
+            company: this.applicationData?.company || '',
+            jobTitle: this.applicationData?.title || '',
+            options: radioLabels,
+          });
+          
+          // Cache if not already cached
+          if (answerSource !== 'verified' && answerSource !== 'cached') {
+            answerCache.cacheAnswer(label, radioLabel, answerSource, 'choice');
+          }
           return;
         }
       }
@@ -1298,6 +1431,18 @@ export class LinkedInBot {
       await radios[0].click();
       console.log(`   ⚡ Default selected first radio option for: ${label}`);
       this.logFormField('radio', label, radioLabels[0] || 'first', 'default_selected', radioLabels);
+      
+      // Record to questions history
+      answerCache.recordToHistory({
+        question: label,
+        answer: radioLabels[0] || 'first',
+        source: 'default',
+        fieldType: 'radio',
+        jobId,
+        company: this.applicationData?.company || '',
+        jobTitle: this.applicationData?.title || '',
+        options: radioLabels,
+      });
     }
   }
 
