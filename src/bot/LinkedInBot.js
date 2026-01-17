@@ -313,11 +313,15 @@ export class LinkedInBot {
 
   /**
    * Search for jobs
+   * @param {string} keyword - Search keyword
+   * @param {number} page - Page number (0-indexed)
+   * @param {string} location - Optional location override for multi-location search
    */
-  async searchJobs(keyword, page = 0) {
-    console.log(`🔍 Searching for "${keyword}" jobs (page ${page + 1})...`);
+  async searchJobs(keyword, page = 0, location = null) {
+    const locationStr = location ? ` in "${location}"` : '';
+    console.log(`🔍 Searching for "${keyword}"${locationStr} jobs (page ${page + 1})...`);
     
-    const searchUrl = buildSearchUrl(keyword, page);
+    const searchUrl = buildSearchUrl(keyword, page, location);
     
     // Retry navigation up to 3 times
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -471,20 +475,7 @@ export class LinkedInBot {
         return { success: false, reason: 'navigation_failed' };
       }
 
-      // Check job title against bad job titles (DevOps, AI, etc.)
-      const badJobTitles = config.jobFilter.badJobTitles || [];
-      if (badJobTitles.length > 0) {
-        const jobTitleLower = title.toLowerCase();
-        const badTitleFound = badJobTitles.find(badTitle => 
-          jobTitleLower.includes(badTitle.toLowerCase())
-        );
-        if (badTitleFound) {
-          console.log(`⏭️ Skipping: Job title contains "${badTitleFound}"`);
-          this.sessionStats.skipped++;
-          stateManager.incrementSkipped();
-          return { success: false, reason: `bad_job_title: ${badTitleFound}` };
-        }
-      }
+      // Note: Bad job title check moved to run() loop for efficiency (skips from grid)
 
       // Check job requirements if COMPLETE_REQUIREMENTS is true
       if (config.jobFilter.completeRequirements) {
@@ -2004,94 +1995,169 @@ export class LinkedInBot {
       if (config.search.randomize) {
         searchTerms = searchTerms.sort(() => Math.random() - 0.5);
       }
+
+      // Get locations - support both single SEARCH_LOCATION and multiple SEARCH_LOCATIONS
+      let searchLocations = config.search.locations.length > 0 
+        ? [...config.search.locations]
+        : (config.search.location ? [config.search.location] : [null]); // null = no location filter
+      
+      if (config.search.randomizeLocations && searchLocations.length > 1) {
+        searchLocations = searchLocations.sort(() => Math.random() - 0.5);
+      }
+
+      const totalLocations = searchLocations.filter(l => l !== null).length;
+      if (totalLocations > 1) {
+        console.log(`📍 Will search across ${totalLocations} location(s): ${searchLocations.join(', ')}`);
+      }
       
       let stoppedByUser = false;
       let limitReached = false;
 
-      // Process each search term
-      for (const term of searchTerms) {
-        // Check if stop was requested from dashboard
-        if (!shouldBotRun()) {
-          console.log('⏹️ Stop requested from dashboard');
-          stoppedByUser = true;
-          break;
-        }
+      // Process each location
+      for (const currentLocation of searchLocations) {
+        if (stoppedByUser || limitReached) break;
         
-        if (stateManager.isLimitReached()) {
-          console.log('📊 Daily limit reached!');
-          limitReached = true;
-          break;
+        let locationApplications = 0;  // Successful applications only
+        let locationJobsProcessed = 0;  // All jobs processed (applied + skipped from grid)
+        const locationDisplay = currentLocation || 'Worldwide';
+        
+        // Determine which counter to use for switching based on switchCountMode
+        const countMode = config.search.switchCountMode || 'all';
+        const getLocationCount = () => countMode === 'all' ? locationJobsProcessed : locationApplications;
+        
+        if (searchLocations.length > 1 || currentLocation) {
+          console.log(`\n📍 ═══════════════════════════════════════════`);
+          console.log(`📍 Searching in location: ${locationDisplay}`);
+          console.log(`📍 Switch mode: ${countMode === 'all' ? 'All jobs (applied + skipped)' : 'Only successful applications'}`);
+          console.log(`📍 ═══════════════════════════════════════════`);
         }
 
-        console.log(`\n🎯 Processing topic: ${term}`);
-        let page = 0;
-        let termApplications = 0;
-
-        while (termApplications < config.search.switchAfter) {
+        // Process each search term for this location
+        for (const term of searchTerms) {
+          // Check if stop was requested from dashboard
           if (!shouldBotRun()) {
             console.log('⏹️ Stop requested from dashboard');
             stoppedByUser = true;
             break;
           }
+          
           if (stateManager.isLimitReached()) {
+            console.log('📊 Daily limit reached!');
             limitReached = true;
             break;
           }
 
-          await this.searchJobs(term, page);
-          const jobs = await this.getJobCards();
-
-          if (jobs.length === 0) {
-            console.log('📭 No more jobs found');
+          // Switch to next location after N jobs processed (based on count mode)
+          if (searchLocations.length > 1 && getLocationCount() >= config.search.switchLocationAfter) {
+            console.log(`📍 Switching location after ${getLocationCount()} jobs processed (${locationApplications} applied, ${locationJobsProcessed - locationApplications} skipped)`);
             break;
           }
 
-          console.log(`📋 Found ${jobs.length} jobs on page ${page + 1}`);
+          console.log(`\n🎯 Processing topic: ${term}${currentLocation ? ` in ${currentLocation}` : ''}`);
+          let page = 0;
+          let termApplications = 0;
+          let termJobsProcessed = 0;
           
-          // Debug: log Easy Apply stats
-          const easyApplyJobs = jobs.filter(j => j.hasEasyApply);
-          const alreadyAppliedJobs = jobs.filter(j => j.alreadyApplied);
-          if (easyApplyJobs.length < jobs.length) {
-            console.log(`   ℹ️  ${easyApplyJobs.length}/${jobs.length} have Easy Apply, ${alreadyAppliedJobs.length} already applied`);
-          }
+          // Determine which counter to use for term switching
+          const getTermCount = () => countMode === 'all' ? termJobsProcessed : termApplications;
 
-          for (const job of jobs) {
-            if (!shouldBotRun()) break;
-            if (stateManager.isLimitReached()) break;
-            if (termApplications >= config.search.switchAfter) break;
-
-            // Skip if already applied
-            if (job.alreadyApplied) {
-              continue;
+          while (getTermCount() < config.search.switchAfter) {
+            if (!shouldBotRun()) {
+              console.log('⏹️ Stop requested from dashboard');
+              stoppedByUser = true;
+              break;
+            }
+            if (stateManager.isLimitReached()) {
+              limitReached = true;
+              break;
+            }
+            if (searchLocations.length > 1 && getLocationCount() >= config.search.switchLocationAfter) {
+              break;
             }
 
-            // Only process Easy Apply jobs
-            if (!job.hasEasyApply) {
-              continue;
+            await this.searchJobs(term, page, currentLocation);
+            const jobs = await this.getJobCards();
+
+            if (jobs.length === 0) {
+              console.log('📭 No more jobs found');
+              break;
             }
 
-            const result = await this.applyToJob(job);
+            console.log(`📋 Found ${jobs.length} jobs on page ${page + 1}`);
             
-            if (result.success) {
-              termApplications++;
+            // Debug: log Easy Apply stats
+            const easyApplyJobs = jobs.filter(j => j.hasEasyApply);
+            const alreadyAppliedJobs = jobs.filter(j => j.alreadyApplied);
+            if (easyApplyJobs.length < jobs.length) {
+              console.log(`   ℹ️  ${easyApplyJobs.length}/${jobs.length} have Easy Apply, ${alreadyAppliedJobs.length} already applied`);
             }
 
-            // Session break for anti-detection
-            if (this.sessionStats.applied > 0 && 
-                this.sessionStats.applied % config.delays.sessionBreak.after === 0) {
-              await sessionBreak();
+            for (const job of jobs) {
+              if (!shouldBotRun()) break;
+              if (stateManager.isLimitReached()) break;
+              if (getTermCount() >= config.search.switchAfter) break;
+              if (searchLocations.length > 1 && getLocationCount() >= config.search.switchLocationAfter) break;
+
+              // Skip if already applied
+              if (job.alreadyApplied) {
+                continue;
+              }
+
+              // Only process Easy Apply jobs
+              if (!job.hasEasyApply) {
+                continue;
+              }
+
+              // Skip bad job titles directly from grid (without opening job page)
+              const badJobTitles = config.jobFilter.badJobTitles || [];
+              if (badJobTitles.length > 0) {
+                const jobTitleLower = job.title.toLowerCase();
+                const badTitleFound = badJobTitles.find(badTitle => 
+                  jobTitleLower.includes(badTitle.toLowerCase())
+                );
+                if (badTitleFound) {
+                  console.log(`⏭️ Skipping from grid: "${job.title}" contains "${badTitleFound}"`);
+                  this.sessionStats.skipped++;
+                  stateManager.incrementSkipped();
+                  // Count as processed for switching purposes
+                  termJobsProcessed++;
+                  locationJobsProcessed++;
+                  continue;
+                }
+              }
+
+              const result = await this.applyToJob(job);
+              
+              // Always count as processed
+              termJobsProcessed++;
+              locationJobsProcessed++;
+              
+              if (result.success) {
+                termApplications++;
+                locationApplications++;
+              }
+
+              // Session break for anti-detection
+              if (this.sessionStats.applied > 0 && 
+                  this.sessionStats.applied % config.delays.sessionBreak.after === 0) {
+                await sessionBreak();
+              }
+
+              await applicationDelay();
             }
 
-            await applicationDelay();
+            page++;
+            
+            // Max pages per term
+            if (page >= 10) break;
           }
 
-          page++;
-          
-          // Max pages per term
-          if (page >= 10) break;
+          console.log(`✅ Finished "${term}"${currentLocation ? ` in ${currentLocation}` : ''}: ${termApplications} applied, ${termJobsProcessed} processed`);
         }
 
-        console.log(`✅ Finished "${term}": ${termApplications} applications`);
+        if (searchLocations.length > 1) {
+          console.log(`📍 Finished location "${locationDisplay}": ${locationApplications} applied, ${locationJobsProcessed} total processed`);
+        }
       }
 
       // Send completion notification based on how bot stopped

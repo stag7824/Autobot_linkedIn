@@ -1328,8 +1328,14 @@ const settingsHTML = `
             <input type="text" id="searchTermsInput" placeholder="Add search term..." />
           </div>
         </div>
+        <div class="form-group full-width">
+          <label>Search Locations (press Enter to add - leave empty for single location below)</label>
+          <div class="tags-input" id="searchLocationsContainer">
+            <input type="text" id="searchLocationsInput" placeholder="Add location (e.g., Germany, Remote)..." />
+          </div>
+        </div>
         <div class="form-group">
-          <label>Location</label>
+          <label>Single Location (fallback if no locations above)</label>
           <input type="text" id="searchLocation" />
         </div>
         <div class="form-group">
@@ -1347,6 +1353,36 @@ const settingsHTML = `
             <option value="Past week">Past Week</option>
             <option value="Past month">Past Month</option>
           </select>
+        </div>
+      </div>
+      
+      <!-- Switch Settings -->
+      <h3 style="margin-top: 20px; color: var(--primary);">⚡ Switch Settings</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Switch Search Term After</label>
+          <input type="number" id="switchAfter" min="1" max="200" />
+          <small style="color: var(--text-muted);">jobs processed</small>
+        </div>
+        <div class="form-group">
+          <label>Switch Location After</label>
+          <input type="number" id="switchLocationAfter" min="1" max="500" />
+          <small style="color: var(--text-muted);">jobs processed</small>
+        </div>
+        <div class="form-group">
+          <label>Count Mode for Switching</label>
+          <select id="switchCountMode">
+            <option value="all">All Jobs (Applied + Skipped)</option>
+            <option value="applied">Only Applied Jobs</option>
+          </select>
+          <small style="color: var(--text-muted);">What counts towards switch threshold</small>
+        </div>
+        <div class="form-group">
+          <label>Randomize Order</label>
+          <div style="display: flex; gap: 15px; margin-top: 8px;">
+            <label class="checkbox-group"><input type="checkbox" id="randomizeSearch" /> Search Terms</label>
+            <label class="checkbox-group"><input type="checkbox" id="randomizeLocations" /> Locations</label>
+          </div>
         </div>
       </div>
     </div>
@@ -1535,6 +1571,7 @@ const settingsHTML = `
   <script>
     let settings = {};
     let searchTerms = [];
+    let searchLocations = [];
     let badWords = [];
     let badJobTitles = [];
     
@@ -1588,6 +1625,9 @@ const settingsHTML = `
       if (containerId === 'searchTermsContainer') {
         searchTerms.splice(index, 1);
         renderTags('searchTermsContainer', searchTerms, 'searchTermsInput');
+      } else if (containerId === 'searchLocationsContainer') {
+        searchLocations.splice(index, 1);
+        renderTags('searchLocationsContainer', searchLocations, 'searchLocationsInput');
       } else if (containerId === 'badWordsContainer') {
         badWords.splice(index, 1);
         renderTags('badWordsContainer', badWords, 'badWordsInput');
@@ -1603,7 +1643,7 @@ const settingsHTML = `
         settings = await res.json();
         
         // Simple fields
-        ['dailyLimit', 'switchAfter', 'searchLocation', 'sortBy', 'datePosted',
+        ['dailyLimit', 'switchAfter', 'switchLocationAfter', 'searchLocation', 'sortBy', 'datePosted',
          'firstName', 'middleName', 'lastName', 'phoneNumber', 'currentCity', 'country',
          'yearsOfExperience', 'requireVisa', 'desiredSalary', 'maxSalary', 'salaryCurrency',
          'noticePeriod', 'website', 'linkedInUrl', 'linkedInHeadline', 'linkedInSummary',
@@ -1618,6 +1658,13 @@ const settingsHTML = `
         document.getElementById('skipResumeUpload').checked = settings.skipResumeUpload || false;
         document.getElementById('followCompanies').checked = settings.followCompanies || false;
         document.getElementById('stealthMode').checked = settings.stealthMode !== false;
+        
+        // Randomize checkboxes
+        document.getElementById('randomizeSearch').checked = settings.randomizeSearch || false;
+        document.getElementById('randomizeLocations').checked = settings.randomizeLocations || false;
+        
+        // Switch count mode
+        document.getElementById('switchCountMode').value = settings.switchCountMode || 'all';
         
         // Experience level checkboxes
         const expLevels = settings.experienceLevel || [];
@@ -1641,9 +1688,11 @@ const settingsHTML = `
         
         // Tags
         searchTerms = settings.searchTerms || [];
+        searchLocations = settings.searchLocations || [];
         badWords = settings.badWords || [];
         badJobTitles = settings.badJobTitles || [];
         renderTags('searchTermsContainer', searchTerms, 'searchTermsInput');
+        renderTags('searchLocationsContainer', searchLocations, 'searchLocationsInput');
         renderTags('badWordsContainer', badWords, 'badWordsInput');
         renderTags('badJobTitlesContainer', badJobTitles, 'badJobTitlesInput');
         
@@ -1659,9 +1708,14 @@ const settingsHTML = `
         const updates = {
           dailyLimit: parseInt(document.getElementById('dailyLimit').value) || 20,
           switchAfter: parseInt(document.getElementById('switchAfter').value) || 30,
+          switchLocationAfter: parseInt(document.getElementById('switchLocationAfter').value) || 50,
+          switchCountMode: document.getElementById('switchCountMode').value || 'all',
           headless: document.getElementById('headless').value === 'true',
           searchTerms: searchTerms,
+          searchLocations: searchLocations,
           searchLocation: document.getElementById('searchLocation').value,
+          randomizeSearch: document.getElementById('randomizeSearch').checked,
+          randomizeLocations: document.getElementById('randomizeLocations').checked,
           sortBy: document.getElementById('sortBy').value,
           datePosted: document.getElementById('datePosted').value,
           

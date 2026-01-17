@@ -103,9 +103,15 @@ const config = {
   // ═══════════════════════════════════════════════════════════════════════════
   search: {
     terms: parseJSON(process.env.SEARCH_TERMS, ['Software Engineer']),
+    // Support both single location (SEARCH_LOCATION) and multiple locations (SEARCH_LOCATIONS)
     location: process.env.SEARCH_LOCATION || '',
+    locations: parseJSON(process.env.SEARCH_LOCATIONS, []),
     switchAfter: parseInt(process.env.SWITCH_AFTER, 30),
+    switchLocationAfter: parseInt(process.env.SWITCH_LOCATION_AFTER, 50), // Switch location after N jobs processed
+    // 'all' = count applied + skipped jobs, 'applied' = only count successful applications
+    switchCountMode: process.env.SWITCH_COUNT_MODE || 'all',
     randomize: parseBool(process.env.RANDOMIZE_SEARCH, false),
+    randomizeLocations: parseBool(process.env.RANDOMIZE_LOCATIONS, false),
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -362,17 +368,21 @@ ${resume.userInfo}
 
 /**
  * Build LinkedIn job search URL with filters
+ * @param {string} keyword - Search keyword
+ * @param {number} page - Page number (0-indexed)
+ * @param {string} location - Optional location override (for multi-location support)
  */
-export function buildSearchUrl(keyword, page = 0) {
+export function buildSearchUrl(keyword, page = 0, location = null) {
   const params = new URLSearchParams();
   
   params.set('keywords', keyword);
   params.set('f_AL', 'true'); // Easy Apply only
   params.set('start', (page * 25).toString());
   
-  // Location
-  if (config.search.location) {
-    params.set('location', config.search.location);
+  // Location - use provided location or fall back to config
+  const searchLocation = location || config.search.location;
+  if (searchLocation) {
+    params.set('location', searchLocation);
   }
   
   // Sort by

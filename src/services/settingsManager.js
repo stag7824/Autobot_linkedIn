@@ -25,7 +25,12 @@ function getEnvBasedDefaults() {
     // Search
     searchTerms: config.search?.terms || ['Software Engineer'],
     searchLocation: config.search?.location || '',
+    searchLocations: config.search?.locations || [],
     switchAfter: config.search?.switchAfter || 30,
+    switchLocationAfter: config.search?.switchLocationAfter || 50,
+    switchCountMode: config.search?.switchCountMode || 'all', // 'all' or 'applied'
+    randomizeSearch: config.search?.randomize || false,
+    randomizeLocations: config.search?.randomizeLocations || false,
     
     // Filters
     sortBy: config.filters?.sortBy || 'Most recent',
@@ -93,7 +98,12 @@ const defaultSettings = {
   // Search
   searchTerms: ['Java Developer'],
   searchLocation: 'Hungary',
+  searchLocations: [],
   switchAfter: 30,
+  switchLocationAfter: 50,
+  switchCountMode: 'all', // 'all' = count applied + skipped, 'applied' = only count successful applications
+  randomizeSearch: false,
+  randomizeLocations: false,
   
   // Filters
   sortBy: 'Most recent',
@@ -264,7 +274,12 @@ export function applySettingsToConfig(config) {
   // Search
   if (settings.searchTerms?.length) config.search.terms = settings.searchTerms;
   if (settings.searchLocation) config.search.location = settings.searchLocation;
+  if (settings.searchLocations?.length) config.search.locations = settings.searchLocations;
   if (settings.switchAfter) config.search.switchAfter = settings.switchAfter;
+  if (settings.switchLocationAfter) config.search.switchLocationAfter = settings.switchLocationAfter;
+  if (settings.switchCountMode) config.search.switchCountMode = settings.switchCountMode;
+  if (settings.randomizeSearch !== undefined) config.search.randomize = settings.randomizeSearch;
+  if (settings.randomizeLocations !== undefined) config.search.randomizeLocations = settings.randomizeLocations;
   
   // Filters
   if (settings.sortBy) config.filters.sortBy = settings.sortBy;
