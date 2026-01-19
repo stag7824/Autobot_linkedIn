@@ -141,19 +141,47 @@ export class LinkedInBot {
       console.log(`   URL: ${url}`);
       console.log(`   Title: ${title}`);
       
-      // Log visible buttons on page
-      const buttons = await this.page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        return btns.slice(0, 10).map(b => ({
-          text: b.textContent?.trim().substring(0, 50),
-          ariaLabel: b.getAttribute('aria-label')?.substring(0, 50),
-          className: b.className?.substring(0, 50)
-        }));
-      });
+      // Log visible dialogs/modals (important for Easy Apply debugging)
+      const dialogs = await this.page.evaluate(() => {
+        const dialogEls = document.querySelectorAll('[role="dialog"], [role="alertdialog"], .artdeco-modal');
+        return Array.from(dialogEls).map(d => {
+          const heading = d.querySelector('h2, h3, .artdeco-modal__header');
+          const hasEasyApply = d.textContent?.toLowerCase().includes('easy apply') || 
+                              d.textContent?.toLowerCase().includes('application');
+          return {
+            heading: heading?.textContent?.trim().substring(0, 60),
+            isEasyApply: hasEasyApply,
+            className: d.className?.substring(0, 50)
+          };
+        }).filter(d => d.heading || d.isEasyApply);
+      }).catch(() => []);
       
-      if (buttons.length > 0) {
-        console.log(`   Top buttons: ${buttons.map(b => b.text || b.ariaLabel || 'unnamed').join(', ')}`);
+      if (dialogs.length > 0) {
+        console.log(`   Dialogs found: ${dialogs.map(d => d.heading || (d.isEasyApply ? 'Easy Apply Modal' : 'Unknown')).join(', ')}`);
+      } else {
+        console.log(`   No dialogs/modals found on page`);
       }
+      
+      // Log Easy Apply related elements
+      const easyApplyInfo = await this.page.evaluate(() => {
+        const easyApplyLink = document.querySelector('a[href*="/apply/"]');
+        const easyApplyButton = Array.from(document.querySelectorAll('button')).find(b => 
+          b.textContent?.toLowerCase().includes('easy apply'));
+        return {
+          hasLink: !!easyApplyLink,
+          linkHref: easyApplyLink?.href?.substring(0, 80),
+          hasButton: !!easyApplyButton,
+          buttonText: easyApplyButton?.textContent?.trim().substring(0, 30)
+        };
+      }).catch(() => ({}));
+      
+      if (easyApplyInfo.hasLink) {
+        console.log(`   Easy Apply Link: ${easyApplyInfo.linkHref}`);
+      }
+      if (easyApplyInfo.hasButton) {
+        console.log(`   Easy Apply Button: "${easyApplyInfo.buttonText}"`);
+      }
+      
     } catch (err) {
       console.log(`📸 [DEBUG ${this.debugCounter}] ${label} - Error: ${err.message}`);
     }
@@ -521,13 +549,22 @@ export class LinkedInBot {
         text: el.textContent?.trim(),
         ariaLabel: el.getAttribute('aria-label'),
         className: el.className,
-        tagName: el.tagName
+        tagName: el.tagName,
+        href: el.href || null
       }), easyApplyBtn);
       console.log(`   🖱️ Clicking button: "${btnInfo.text}" (${btnInfo.ariaLabel || btnInfo.className})`);
-
-      // Click Easy Apply using evaluate to ensure we click the right element
-      await this.page.evaluate(el => el.click(), easyApplyBtn);
-      await randomSleep(2000, 3000);
+      
+      // For anchor tags, navigate directly to the href to ensure the apply page opens
+      // LinkedIn's JavaScript click handlers may not work reliably in puppeteer
+      if (btnInfo.tagName === 'A' && btnInfo.href && btnInfo.href.includes('/apply/')) {
+        console.log(`   📍 Navigating to Easy Apply URL: ${btnInfo.href.substring(0, 80)}...`);
+        await this.page.goto(btnInfo.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await randomSleep(2000, 3000);
+      } else {
+        // For button elements, use puppeteer's native click method (more reliable than DOM click)
+        await easyApplyBtn.click();
+        await randomSleep(2000, 3000);
+      }
       
       await this.debugSnapshot('after_click_easy_apply');
       
@@ -542,33 +579,65 @@ export class LinkedInBot {
         return { success: false, reason: 'clicked_wrong_button' };
       }
       
-      // Wait for modal to appear - be more specific about Easy Apply modal
-      console.log(`   Waiting for Easy Apply modal...`);
-      const modalAppeared = await this.page.waitForSelector(
-        '.jobs-easy-apply-modal, .jobs-easy-apply-content',
-        { timeout: 5000 }
-      ).catch(() => null);
+      // UPDATED January 2026: Clicking the Easy Apply LINK opens the modal DIRECTLY on the main page
+      // There's NO need to click anything inside an iframe - the /preload/ iframe is just for LinkedIn's internal use
+      console.log(`   Waiting for Easy Apply modal to appear on main page...`);
+      
+      // Wait for modal to appear - modal opens DIRECTLY on main page after clicking Easy Apply link
+      let modalAppeared = await this.waitForEasyApplyModal(8000);
       
       if (!modalAppeared) {
-        // Check if any dialog opened
-        const anyDialog = await this.page.$('[role="dialog"]');
-        if (anyDialog) {
-          const dialogText = await this.page.evaluate(el => el.textContent?.substring(0, 100), anyDialog);
-          console.log(`   Found dialog with text: ${dialogText}`);
-        } else {
-          console.log(`⚠️ No modal appeared after clicking Easy Apply`);
-          await this.debugSnapshot('no_modal_appeared');
+        console.log(`⚠️ Modal didn't appear on first click, retrying...`);
+        await this.debugSnapshot('no_modal_first_try');
+        
+        // Check for "Save this application?" dialog - means modal was accidentally dismissed
+        const saveDialog = await this.page.evaluate(() => {
+          const dialogs = document.querySelectorAll('[role="alertdialog"], [role="dialog"]');
+          for (const dialog of dialogs) {
+            if (dialog.textContent?.includes('Save this application')) {
+              return true;
+            }
+          }
+          return false;
+        }).catch(() => false);
+        
+        if (saveDialog) {
+          console.log(`   ⚠️ Save dialog detected - clicking Discard`);
+          await this.page.evaluate(() => {
+            const buttons = document.querySelectorAll('button');
+            for (const btn of buttons) {
+              if (btn.textContent?.toLowerCase().includes('discard')) {
+                btn.click();
+                return;
+              }
+            }
+          });
+          await randomSleep(1000, 1500);
         }
         
-        // Try clicking button again
-        console.log(`   Trying to click Easy Apply button again...`);
+        // Try clicking Easy Apply button again
         const easyApplyBtn2 = await this.findEasyApplyButton();
         if (easyApplyBtn2) {
+          console.log(`   🖱️ Clicking Easy Apply button again...`);
           await this.page.evaluate(el => el.click(), easyApplyBtn2);
           await randomSleep(2000, 3000);
           await this.debugSnapshot('after_second_click');
+          
+          // Wait for modal again
+          modalAppeared = await this.waitForEasyApplyModal(5000);
+        }
+        
+        if (!modalAppeared) {
+          console.log(`❌ Easy Apply modal failed to appear`);
+          await this.debugSnapshot('modal_never_appeared');
+          this.sessionStats.failed++;
+          stateManager.incrementFailed();
+          return { success: false, reason: 'modal_not_appearing' };
         }
       }
+      
+      console.log(`   ✅ Easy Apply modal is open, proceeding with application...`);
+      await this.debugSnapshot('modal_opened_successfully');
 
       // Handle the application modal
       const applied = await this.handleEasyApplyModal();
@@ -652,17 +721,61 @@ export class LinkedInBot {
 
   /**
    * Find Easy Apply button - improved with strict matching
+   * UPDATED: LinkedIn now uses anchor tags (links) for Easy Apply on job detail pages
    */
   async findEasyApplyButton() {
     console.log(`   Searching for Easy Apply button...`);
     
-    // Method 1: Look for button with exact "Easy Apply" text
+    // Method 1: Look for ANCHOR TAG with "Easy Apply" text (NEW LinkedIn UI - January 2026)
+    // On /jobs/view/ID/ pages, Easy Apply is now an anchor tag with URL containing "/apply/"
+    const easyApplyLink = await this.page.evaluate(() => {
+      // Look for anchor tags with Easy Apply
+      const links = Array.from(document.querySelectorAll('a'));
+      for (const link of links) {
+        const text = link.textContent?.trim().toLowerCase();
+        const href = link.href?.toLowerCase() || '';
+        const ariaLabel = link.getAttribute('aria-label')?.toLowerCase() || '';
+        
+        // Check if it's the Easy Apply link
+        if ((text?.includes('easy apply') || ariaLabel?.includes('easy apply')) &&
+            href.includes('/apply/') &&
+            !text?.includes('premium') && 
+            !text?.includes('learning')) {
+          return { found: true, type: 'link' };
+        }
+      }
+      return { found: false };
+    });
+    
+    if (easyApplyLink?.found) {
+      // Get the actual anchor element
+      const links = await this.page.$$('a');
+      for (const link of links) {
+        const info = await this.page.evaluate(el => ({
+          text: el.textContent?.trim().toLowerCase(),
+          href: el.href?.toLowerCase() || '',
+          ariaLabel: el.getAttribute('aria-label')?.toLowerCase() || ''
+        }), link);
+        
+        if ((info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) &&
+            info.href.includes('/apply/') &&
+            !info.text?.includes('premium') && 
+            !info.text?.includes('learning')) {
+          console.log(`   Found Easy Apply LINK (anchor tag) - new LinkedIn UI`);
+          return link;
+        }
+      }
+    }
+    
+    // Method 2: Look for BUTTON with "Easy Apply" text (search results page or older UI)
     const easyApplyByText = await this.page.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
       for (const btn of buttons) {
         const text = btn.textContent?.trim().toLowerCase();
+        const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+        
         // Must contain "easy apply" and NOT be a premium/learning button
-        if (text?.includes('easy apply') && 
+        if ((text?.includes('easy apply') || ariaLabel?.includes('easy apply')) && 
             !text?.includes('premium') && 
             !text?.includes('learning') &&
             !text?.includes('upgrade')) {
@@ -676,35 +789,47 @@ export class LinkedInBot {
       // Get the actual button element
       const buttons = await this.page.$$('button');
       for (const btn of buttons) {
-        const text = await this.page.evaluate(el => el.textContent?.trim().toLowerCase(), btn);
-        if (text?.includes('easy apply') && 
-            !text?.includes('premium') && 
-            !text?.includes('learning')) {
-          console.log(`   Found Easy Apply button by text match`);
+        const info = await this.page.evaluate(el => ({
+          text: el.textContent?.trim().toLowerCase(),
+          ariaLabel: el.getAttribute('aria-label')?.toLowerCase() || ''
+        }), btn);
+        
+        if ((info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) && 
+            !info.text?.includes('premium') && 
+            !info.text?.includes('learning')) {
+          console.log(`   Found Easy Apply BUTTON by text match`);
           return btn;
         }
       }
     }
     
-    // Method 2: Look for specific LinkedIn Easy Apply selectors
+    // Method 3: Look for specific LinkedIn Easy Apply selectors (buttons AND links)
     const selectors = [
-      'button.jobs-apply-button--top-card', // Primary Easy Apply button
+      // Link selectors (new UI)
+      'a[href*="/apply/"]',
+      'a.jobs-apply-button',
+      // Button selectors (search results, older UI)
+      'button.jobs-apply-button--top-card',
       'button.jobs-apply-button[aria-label*="Easy Apply"]',
+      'button[aria-label*="Easy Apply"]',
       '.jobs-apply-button--top-card button',
       '.jobs-s-apply button[aria-label*="Easy Apply"]',
     ];
 
     for (const selector of selectors) {
       try {
-        const btn = await this.page.$(selector);
-        if (btn) {
-          const text = await this.page.evaluate(el => el.textContent?.toLowerCase(), btn);
-          const ariaLabel = await this.page.evaluate(el => el.getAttribute('aria-label')?.toLowerCase(), btn);
+        const elements = await this.page.$$(selector);
+        for (const el of elements) {
+          const info = await this.page.evaluate(element => ({
+            text: element.textContent?.toLowerCase(),
+            ariaLabel: element.getAttribute('aria-label')?.toLowerCase() || '',
+            tagName: element.tagName.toLowerCase()
+          }), el);
           
           // Verify it's actually Easy Apply
-          if (text?.includes('easy apply') || ariaLabel?.includes('easy apply')) {
-            console.log(`   Found Easy Apply button via selector: ${selector}`);
-            return btn;
+          if (info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) {
+            console.log(`   Found Easy Apply ${info.tagName.toUpperCase()} via selector: ${selector}`);
+            return el;
           }
         }
       } catch {
@@ -712,36 +837,226 @@ export class LinkedInBot {
       }
     }
     
-    // Method 3: Look in the job details card specifically
-    const jobCardBtn = await this.page.evaluate(() => {
-      // Look for the Easy Apply button in the job details section
-      const jobCard = document.querySelector('.jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card');
+    // Method 4: Look in the job details card specifically (buttons AND links)
+    const jobCardElement = await this.page.evaluate(() => {
+      // Look for the Easy Apply button/link in the job details section
+      const jobCard = document.querySelector('.jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card, main');
       if (jobCard) {
+        // Check for link first (new UI)
+        const link = jobCard.querySelector('a[href*="/apply/"]');
+        if (link?.textContent?.toLowerCase().includes('easy apply')) {
+          return { found: true, type: 'link' };
+        }
+        // Check for button (older UI)
         const btn = jobCard.querySelector('button');
         if (btn?.textContent?.toLowerCase().includes('easy apply')) {
-          return true;
+          return { found: true, type: 'button' };
         }
       }
-      return false;
+      return { found: false };
     });
     
-    if (jobCardBtn) {
-      const jobCard = await this.page.$('.jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card');
+    if (jobCardElement?.found) {
+      const jobCard = await this.page.$('.jobs-details, .job-details-jobs-unified-top-card, .jobs-unified-top-card, main');
       if (jobCard) {
-        const btn = await jobCard.$('button');
-        if (btn) {
-          console.log(`   Found Easy Apply button in job card`);
-          return btn;
+        if (jobCardElement.type === 'link') {
+          const link = await jobCard.$('a[href*="/apply/"]');
+          if (link) {
+            console.log(`   Found Easy Apply LINK in job card`);
+            return link;
+          }
+        } else {
+          const btn = await jobCard.$('button');
+          if (btn) {
+            console.log(`   Found Easy Apply BUTTON in job card`);
+            return btn;
+          }
         }
       }
     }
 
-    console.log(`   No Easy Apply button found with any method`);
+    console.log(`   No Easy Apply button/link found with any method`);
     return null;
   }
 
   /**
-   * Handle Easy Apply modal
+   * Get the preload iframe that LinkedIn uses for Easy Apply
+   * LinkedIn now loads the entire Easy Apply flow inside an iframe at /preload/
+   * @returns {Promise<Frame|null>} The preload frame or null if not found
+   */
+  async getPreloadIframe() {
+    const frames = this.page.frames();
+    const preloadFrame = frames.find(frame => {
+      const url = frame.url();
+      return url.includes('/preload/') || url.includes('preload');
+    });
+    return preloadFrame || null;
+  }
+
+  /**
+   * Click Easy Apply button inside LinkedIn's preload iframe
+   * LinkedIn now loads an intermediate iframe at /preload/ when clicking Easy Apply
+   * We need to find and click the actual Easy Apply button inside that iframe
+   * @returns {Promise<{clicked: boolean, frame: Frame|null}>} Whether we clicked and the frame reference
+   */
+  async clickEasyApplyInIframe() {
+    try {
+      console.log(`   Looking for Easy Apply iframe...`);
+      
+      // Get all frames
+      const frames = this.page.frames();
+      console.log(`   Found ${frames.length} frames on page`);
+      
+      // Find the preload iframe
+      const preloadFrame = await this.getPreloadIframe();
+      
+      if (!preloadFrame) {
+        console.log(`   No preload iframe found`);
+        return { clicked: false, frame: null };
+      }
+      
+      console.log(`   Found preload iframe: ${preloadFrame.url()}`);
+      
+      // Store reference to the active frame for modal handling
+      this.activeFrame = preloadFrame;
+      
+      // Wait for the iframe content to load
+      await randomSleep(500, 1000);
+      
+      // Look for Easy Apply button inside the iframe
+      const easyApplyButton = await preloadFrame.evaluate(() => {
+        // Look for button with Easy Apply text
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {
+          const text = btn.textContent?.toLowerCase() || '';
+          const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+          
+          if (text.includes('easy apply') || ariaLabel.includes('easy apply')) {
+            // Click it
+            btn.click();
+            return { found: true, text: btn.textContent?.trim() };
+          }
+        }
+        
+        // Also check for links that might be styled as buttons
+        const links = document.querySelectorAll('a');
+        for (const link of links) {
+          const text = link.textContent?.toLowerCase() || '';
+          const href = link.getAttribute('href') || '';
+          
+          if ((text.includes('easy apply') || href.includes('/apply/')) && !href.includes('guideOverlay')) {
+            link.click();
+            return { found: true, text: link.textContent?.trim(), isLink: true };
+          }
+        }
+        
+        return { found: false };
+      });
+      
+      if (easyApplyButton?.found) {
+        console.log(`   ✅ Clicked Easy Apply in iframe: "${easyApplyButton.text}"`);
+        return { clicked: true, frame: preloadFrame };
+      }
+      
+      console.log(`   No Easy Apply button found in iframe`);
+      return { clicked: false, frame: preloadFrame };
+    } catch (error) {
+      console.log(`   Error accessing iframe: ${error.message}`);
+      return { clicked: false, frame: null };
+    }
+  }
+  
+  /**
+   * Get the frame context for executing actions
+   * UPDATED January 2026: Clicking the Easy Apply LINK directly opens the modal on main page.
+   * No iframe interaction needed anymore.
+   * @returns {Promise<Page>} The main page (always, since modal is on main page)
+   */
+  async getActiveContext() {
+    // The application modal always appears on the main page
+    return this.page;
+  }
+
+  /**
+   * Wait for Easy Apply modal to appear on the main page
+   * OR detect when we're directly on the apply page (after navigating to /apply/ URL)
+   * @param {number} timeout - Maximum time to wait in ms
+   * @returns {Promise<boolean>} Whether the modal appeared
+   */
+  async waitForEasyApplyModal(timeout = 8000) {
+    const startTime = Date.now();
+    const checkInterval = 500;
+    
+    while (Date.now() - startTime < timeout) {
+      // First check if we're on the direct apply page (URL contains /apply/)
+      const currentUrl = this.page.url();
+      if (currentUrl.includes('/apply/')) {
+        console.log(`   ✅ On Easy Apply page (direct navigation)`);
+        // Wait a moment for the page to fully load
+        await new Promise(r => setTimeout(r, 1000));
+        return true;
+      }
+      
+      // Check for Easy Apply modal using multiple detection methods
+      const modalFound = await this.page.evaluate(() => {
+        const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
+        
+        for (const dialog of dialogs) {
+          const text = dialog.textContent || '';
+          const lowerText = text.toLowerCase();
+          
+          // Exclude messaging widget and other non-Easy Apply dialogs
+          if (text.includes('Open Emoji Keyboard') || 
+              text.includes('Compose message') ||
+              text.includes('Premium features')) {
+            continue;
+          }
+          
+          // Check for Easy Apply indicators
+          const isEasyApply = 
+            dialog.classList.contains('jobs-easy-apply-modal') ||
+            dialog.className.includes('easy-apply') ||
+            lowerText.includes('contact info') ||
+            lowerText.includes('resume') ||
+            lowerText.includes('job application progress') ||
+            lowerText.includes('continue to next step') ||
+            lowerText.includes('submit application') ||
+            lowerText.includes('review your application') ||
+            (lowerText.includes('apply to') && lowerText.includes('email'));
+          
+          if (isEasyApply) {
+            // Also verify it has the expected buttons
+            const buttons = dialog.querySelectorAll('button');
+            const buttonTexts = Array.from(buttons).map(b => b.textContent?.trim()?.toLowerCase() || '');
+            const hasExpectedButton = buttonTexts.some(t => 
+              t.includes('next') || 
+              t.includes('continue') || 
+              t.includes('submit') || 
+              t.includes('review') ||
+              t.includes('dismiss')
+            );
+            
+            if (hasExpectedButton) {
+              return { found: true, title: dialog.querySelector('h2, h3')?.textContent?.trim() || 'Easy Apply' };
+            }
+          }
+        }
+        return { found: false };
+      }).catch(() => ({ found: false }));
+      
+      if (modalFound.found) {
+        console.log(`   ✅ Easy Apply modal detected: "${modalFound.title}"`);
+        return true;
+      }
+      
+      await new Promise(r => setTimeout(r, checkInterval));
+    }
+    
+    return false;
+  }
+
+  /**
+   * Handle Easy Apply modal (or direct apply page)
    */
   async handleEasyApplyModal() {
     const maxSteps = 10;
@@ -751,6 +1066,12 @@ export class LinkedInBot {
     console.log('📝 Starting Easy Apply modal handler...');
     this.logAction('modal_started', { maxSteps });
     if (jobId) jobLogger.logSection(jobId, 'Easy Apply Modal');
+    
+    // Check if we're on a direct apply page (URL contains /apply/)
+    const isDirectApplyPage = this.page.url().includes('/apply/');
+    if (isDirectApplyPage) {
+      console.log(`   📍 Direct apply page detected - application form is embedded in page`);
+    }
 
     while (step < maxSteps) {
       step++;
@@ -761,10 +1082,14 @@ export class LinkedInBot {
       // Take debug snapshot at each step
       await this.debugSnapshot(`modal_step_${step}`);
 
-      // Find the CORRECT Easy Apply modal (not the messaging widget)
-      // Check for multiple indicators of Easy Apply modal
-      const modal = await this.page.evaluate(() => {
-        // Get all dialogs
+      // The form appears on main page (either as modal or directly on /apply/ page)
+      const context = this.page;
+      console.log(`   Looking for application form on main page...`);
+
+      // Find the application form container
+      // Works for both modal dialogs AND direct /apply/ page
+      const formContainer = await context.evaluate(() => {
+        // First try: dialog/modal (traditional flow)
         const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
         
         for (const dialog of dialogs) {
@@ -808,24 +1133,87 @@ export class LinkedInBot {
             return { found: true, method: 'text-match' };
           }
         }
+        
+        // Second try: Direct apply page (URL contains /apply/)
+        // The form is embedded directly on the page, not in a modal
+        if (window.location.href.includes('/apply/')) {
+          // Look for the application form container on the page
+          const applyContainers = document.querySelectorAll('.jobs-easy-apply-content, .artdeco-card, main form, [class*="apply"]');
+          for (const container of applyContainers) {
+            const text = container.textContent || '';
+            const lowerText = text.toLowerCase();
+            const buttons = container.querySelectorAll('button');
+            const buttonTexts = Array.from(buttons).map(b => b.textContent?.trim()?.toLowerCase() || '');
+            
+            const hasApplyButtons = buttonTexts.some(t => 
+              t.includes('next') || 
+              t.includes('continue') || 
+              t.includes('submit') || 
+              t.includes('review')
+            );
+            
+            if (hasApplyButtons || lowerText.includes('contact info') || 
+                lowerText.includes('resume') || lowerText.includes('application')) {
+              return { found: true, method: 'direct-apply-page' };
+            }
+          }
+        }
+        
         return { found: false };
       });
       
-      if (modal?.found) {
-        console.log(`✅ Easy Apply modal detected via ${modal.method}`);
+      if (formContainer?.found) {
+        console.log(`✅ Application form detected via ${formContainer.method}`);
       }
 
-      if (!modal?.found) {
-        console.log('⚠️ Easy Apply modal not found, checking if application succeeded...');
+      // Check for "Save this application?" dialog which means modal was dismissed
+      // Dialog appears on main page
+      let saveDialog = await this.page.evaluate(() => {
+        const dialogs = document.querySelectorAll('[role="alertdialog"], [role="dialog"]');
+        for (const dialog of dialogs) {
+          const text = dialog.textContent || '';
+          if (text.includes('Save this application')) {
+            return { found: true, text: 'Save this application?' };
+          }
+        }
+        return { found: false };
+      }).catch(() => ({ found: false }));
+      
+      if (saveDialog?.found) {
+        console.log('⚠️ "Save this application?" dialog detected - modal was dismissed accidentally');
+        // Click Discard button on main page
+        await this.page.evaluate(() => {
+          const buttons = document.querySelectorAll('button');
+          for (const btn of buttons) {
+            if (btn.textContent?.toLowerCase().includes('discard')) {
+              btn.click();
+              return;
+            }
+          }
+        }).catch(() => {});
+        await randomSleep(1500, 2000);
+        
+        // Try to click Easy Apply again on main page
+        const easyApplyBtn = await this.findEasyApplyButton();
+        if (easyApplyBtn) {
+          await this.page.evaluate(el => el.click(), easyApplyBtn);
+          await randomSleep(2000, 2500);
+        }
+        continue; // Retry this step
+      }
+
+      if (!formContainer?.found) {
+        console.log('⚠️ Application form not found, checking if application succeeded...');
         if (await this.checkApplicationSuccess()) {
           return true;
         }
-        console.log('❌ Modal disappeared without success');
+        console.log('❌ Form disappeared without success');
         return false;
       }
 
-      // Log current modal state - get headings from any visible modal with Easy Apply buttons
-      const modalText = await this.page.evaluate(() => {
+      // Log current form state - get headings from any visible form with Easy Apply buttons
+      const modalText = await context.evaluate(() => {
+        // First try dialogs
         const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
         for (const dialog of dialogs) {
           // Find modal with Dismiss/Next buttons (Easy Apply indicators)
@@ -840,7 +1228,14 @@ export class LinkedInBot {
             return Array.from(headings).map(h => h.textContent?.trim()).filter(Boolean).join(' | ') || 'Easy Apply Step';
           }
         }
-        return 'Unknown modal state';
+        
+        // Fallback: try direct apply page
+        if (window.location.href.includes('/apply/')) {
+          const headings = document.querySelectorAll('h1, h2, h3, .artdeco-card h2');
+          return Array.from(headings).slice(0, 3).map(h => h.textContent?.trim()).filter(Boolean).join(' | ') || 'Apply Page';
+        }
+        
+        return 'Unknown form state';
       });
       console.log(`📋 Modal state: ${modalText}`);
       
@@ -893,7 +1288,7 @@ export class LinkedInBot {
       }
 
       // No progress made - log available buttons for debugging
-      const availableButtons = await this.page.evaluate(() => {
+      const availableButtons = await context.evaluate(() => {
         const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
         for (const dialog of dialogs) {
           const text = dialog.textContent || '';
@@ -935,9 +1330,16 @@ export class LinkedInBot {
   async fillFormFields() {
     console.log('📝 Scanning for form fields...');
     
-    // Find the Easy Apply modal first
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    const isInIframe = context !== this.page;
+    
+    // Find the Easy Apply modal first - in the correct context
     const modalSelector = '.jobs-easy-apply-modal, [role="dialog"]:not(:has(.msg-overlay-list-bubble))';
-    const modal = await this.page.$(modalSelector);
+    const modal = isInIframe 
+      ? await context.$(modalSelector)
+      : await this.page.$(modalSelector);
+      
     if (!modal) {
       console.log('⚠️ No Easy Apply modal found for form filling');
       return;
@@ -950,8 +1352,9 @@ export class LinkedInBot {
 
     for (const group of formGroups) {
       try {
-        // Get label text for this form group
-        const label = await this.page.evaluate(el => {
+        // Get label text for this form group - use appropriate context for evaluate
+        const evaluateContext = isInIframe ? context : this.page;
+        const label = await evaluateContext.evaluate(el => {
           // Try multiple selectors for labels
           const labelSelectors = [
             'label span',
@@ -1609,8 +2012,12 @@ export class LinkedInBot {
    * LinkedIn uses: "Submit application" as button text (not aria-label)
    */
   async tryClickSubmit() {
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    
     // Get buttons from ANY visible Easy Apply modal 
-    const buttons = await this.page.$$eval('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal', (dialogs) => {
+    const buttons = await context.evaluate(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
         const text = dialog.textContent || '';
         
@@ -1636,7 +2043,7 @@ export class LinkedInBot {
         }
       }
       return [];
-    });
+    }).catch(() => []);
     
     // Priority 1: Exact match "Submit application"
     for (const btnInfo of buttons) {
@@ -1671,11 +2078,15 @@ export class LinkedInBot {
 
   /**
    * Try to click Review button
-   * LinkedIn uses: "Review your application" as button text (not aria-label)
+   * LinkedIn uses: "Review" or "Review your application" as button text
    */
   async tryClickReview() {
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    
     // Get buttons from ANY visible Easy Apply modal 
-    const buttons = await this.page.$$eval('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal', (dialogs) => {
+    const buttons = await context.evaluate(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
         const text = dialog.textContent || '';
         
@@ -1701,9 +2112,18 @@ export class LinkedInBot {
         }
       }
       return [];
-    });
+    }).catch(() => []);
     
-    // Priority 1: Exact match "Review your application"
+    // Priority 1: Exact match "Review" (new LinkedIn UI)
+    for (const btnInfo of buttons) {
+      if (btnInfo.text === 'Review' && !btnInfo.disabled) {
+        console.log('✅ Found "Review" button');
+        const success = await this.clickModalButtonByIndex(btnInfo.idx);
+        if (success) return true;
+      }
+    }
+    
+    // Priority 2: Exact match "Review your application" (legacy LinkedIn UI)
     for (const btnInfo of buttons) {
       if (btnInfo.text === 'Review your application' && !btnInfo.disabled) {
         console.log('✅ Found "Review your application" button');
@@ -1712,19 +2132,24 @@ export class LinkedInBot {
       }
     }
     
-    // Priority 2: aria-label match
+    // Priority 3: aria-label match
     for (const btnInfo of buttons) {
-      if (btnInfo.ariaLabel.includes('Review your application') && !btnInfo.disabled) {
-        console.log('✅ Found Review button via aria-label');
+      const ariaLower = btnInfo.ariaLabel.toLowerCase();
+      if ((ariaLower.includes('review your application') || ariaLower === 'review') && !btnInfo.disabled) {
+        console.log(`✅ Found Review button via aria-label: "${btnInfo.ariaLabel}"`);
         const success = await this.clickModalButtonByIndex(btnInfo.idx);
         if (success) return true;
       }
     }
 
-    // Priority 3: Fuzzy text match (but not "Mark feedback" or edit buttons)
+    // Priority 4: Fuzzy text match (but not "Mark feedback", edit buttons, or Next)
     for (const btnInfo of buttons) {
       const text = btnInfo.text.toLowerCase();
-      if (text.includes('review') && !text.includes('mark') && !text.includes('edit') && !btnInfo.disabled) {
+      if (text.includes('review') && 
+          !text.includes('mark') && 
+          !text.includes('edit') && 
+          !text.includes('next') && 
+          !btnInfo.disabled) {
         console.log(`✅ Found review button via fuzzy match: "${btnInfo.text}"`);
         const success = await this.clickModalButtonByIndex(btnInfo.idx);
         if (success) return true;
@@ -1736,11 +2161,15 @@ export class LinkedInBot {
 
   /**
    * Try to click Next button
-   * LinkedIn uses: "Continue to next step" as button text (not aria-label)
+   * LinkedIn uses: "Next" or "Continue to next step" as button text
    */
   async tryClickNext() {
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    
     // Get buttons from ANY visible Easy Apply modal 
-    const buttons = await this.page.$$eval('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal', (dialogs) => {
+    const buttons = await context.evaluate(() => {
+      const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
         const text = dialog.textContent || '';
         
@@ -1769,13 +2198,22 @@ export class LinkedInBot {
         }
       }
       return [];
-    });
+    }).catch(() => []);
     
     if (buttons.length > 0) {
       console.log(`   Found ${buttons.length} buttons in modal:`, buttons.map(b => b.text).filter(t => t).join(', '));
     }
     
-    // Priority 1: Exact match "Continue to next step"
+    // Priority 1: Exact match "Next" (new LinkedIn UI)
+    for (const btnInfo of buttons) {
+      if (btnInfo.text === 'Next' && !btnInfo.disabled) {
+        console.log('✅ Found "Next" button');
+        const success = await this.clickModalButtonByIndex(btnInfo.idx);
+        if (success) return true;
+      }
+    }
+    
+    // Priority 2: Exact match "Continue to next step" (legacy LinkedIn UI)
     for (const btnInfo of buttons) {
       if (btnInfo.text === 'Continue to next step' && !btnInfo.disabled) {
         console.log('✅ Found "Continue to next step" button');
@@ -1784,19 +2222,24 @@ export class LinkedInBot {
       }
     }
     
-    // Priority 2: aria-label match
+    // Priority 3: aria-label match
     for (const btnInfo of buttons) {
-      if (btnInfo.ariaLabel.includes('Continue to next step') && !btnInfo.disabled) {
-        console.log('✅ Found Next button via aria-label');
+      const ariaLower = btnInfo.ariaLabel.toLowerCase();
+      if ((ariaLower.includes('continue to next step') || ariaLower.includes('next')) && !btnInfo.disabled) {
+        console.log(`✅ Found Next button via aria-label: "${btnInfo.ariaLabel}"`);
         const success = await this.clickModalButtonByIndex(btnInfo.idx);
         if (success) return true;
       }
     }
 
-    // Priority 3: Fuzzy text match (next/continue but not back)
+    // Priority 4: Fuzzy text match (next/continue but not back, review, or submit)
     for (const btnInfo of buttons) {
       const text = btnInfo.text.toLowerCase();
-      if ((text.includes('next') || text === 'continue') && !text.includes('back') && !btnInfo.disabled) {
+      if ((text.includes('next') || text === 'continue') && 
+          !text.includes('back') && 
+          !text.includes('review') && 
+          !text.includes('submit') && 
+          !btnInfo.disabled) {
         console.log(`✅ Found next button via fuzzy match: "${btnInfo.text}"`);
         const success = await this.clickModalButtonByIndex(btnInfo.idx);
         if (success) return true;
@@ -1811,7 +2254,10 @@ export class LinkedInBot {
    * Click a button in the Easy Apply modal by its index
    */
   async clickModalButtonByIndex(idx) {
-    return await this.page.evaluate((buttonIdx) => {
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    
+    return await context.evaluate((buttonIdx) => {
       const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
         const text = dialog.textContent || '';
@@ -1836,7 +2282,7 @@ export class LinkedInBot {
         }
       }
       return false;
-    }, idx);
+    }, idx).catch(() => false);
   }
 
   /**
@@ -1844,7 +2290,10 @@ export class LinkedInBot {
    * This is more reliable as LinkedIn buttons often have text in nested span elements
    */
   async clickButtonBySpanText(buttonText) {
-    const clicked = await this.page.evaluate((targetText) => {
+    // Get the active context (iframe or main page)
+    const context = await this.getActiveContext();
+    
+    const clicked = await context.evaluate((targetText) => {
       const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
         const text = dialog.textContent || '';
@@ -1870,7 +2319,7 @@ export class LinkedInBot {
         }
       }
       return { success: false };
-    }, buttonText);
+    }, buttonText).catch(() => ({ success: false }));
     
     if (clicked.success) {
       console.log(`✅ Clicked button: "${clicked.text}"`);
@@ -1884,8 +2333,11 @@ export class LinkedInBot {
    */
   async checkApplicationSuccess() {
     try {
-      // Check page text for success indicators
-      const successCheck = await this.page.evaluate(() => {
+      // Get the active context (iframe or main page)
+      const context = await this.getActiveContext();
+      
+      // Check context (iframe or main page) for success indicators
+      const successCheck = await context.evaluate(() => {
         const pageText = document.body.innerText?.toLowerCase() || '';
         
         // Check for success phrases
