@@ -165,13 +165,26 @@ export class LinkedInBot {
       // Log Easy Apply related elements
       const easyApplyInfo = await this.page.evaluate(() => {
         const easyApplyLink = document.querySelector('a[href*="/apply/"]');
-        const easyApplyButton = Array.from(document.querySelectorAll('button')).find(b => 
+        const allButtons = Array.from(document.querySelectorAll('button'));
+        const easyApplyButton = allButtons.find(b => 
           b.textContent?.toLowerCase().includes('easy apply'));
+        
+        // Get ALL buttons that might be related to applying
+        const applyRelatedButtons = allButtons.filter(b => {
+          const text = b.textContent?.toLowerCase() || '';
+          return text.includes('easy apply') || text.includes('apply') || text.includes('premium');
+        }).map(b => ({
+          text: b.textContent?.trim().substring(0, 50),
+          ariaLabel: b.getAttribute('aria-label')?.substring(0, 50),
+          classes: b.className?.substring(0, 50)
+        }));
+        
         return {
           hasLink: !!easyApplyLink,
           linkHref: easyApplyLink?.href?.substring(0, 80),
           hasButton: !!easyApplyButton,
-          buttonText: easyApplyButton?.textContent?.trim().substring(0, 30)
+          buttonText: easyApplyButton?.textContent?.trim().substring(0, 30),
+          allApplyButtons: applyRelatedButtons
         };
       }).catch(() => ({}));
       
@@ -180,6 +193,9 @@ export class LinkedInBot {
       }
       if (easyApplyInfo.hasButton) {
         console.log(`   Easy Apply Button: "${easyApplyInfo.buttonText}"`);
+      }
+      if (easyApplyInfo.allApplyButtons?.length > 0) {
+        console.log(`   All Apply-related buttons: ${JSON.stringify(easyApplyInfo.allApplyButtons)}`);
       }
       
     } catch (err) {
@@ -535,7 +551,13 @@ export class LinkedInBot {
 
       await this.debugSnapshot('before_find_easy_apply');
 
-      // Find Easy Apply button
+      // IMPORTANT: Dismiss any premium promotion overlays that might intercept clicks
+      await this.dismissPremiumOverlays();
+      
+      // Small wait after dismissing overlays
+      await randomSleep(500, 1000);
+
+      // Find Easy Apply button/link to confirm the job has Easy Apply
       const easyApplyBtn = await this.findEasyApplyButton();
       if (!easyApplyBtn) {
         console.log(`⏭️ No Easy Apply button found`);
@@ -544,44 +566,49 @@ export class LinkedInBot {
         return { success: false, reason: 'no_easy_apply' };
       }
       
-      // Log button info before clicking
+      // Log button info to confirm Easy Apply is available
       const btnInfo = await this.page.evaluate(el => ({
         text: el.textContent?.trim(),
         ariaLabel: el.getAttribute('aria-label'),
         className: el.className,
-        tagName: el.tagName,
-        href: el.href || null
+        tagName: el.tagName
       }), easyApplyBtn);
-      console.log(`   🖱️ Clicking button: "${btnInfo.text}" (${btnInfo.ariaLabel || btnInfo.className})`);
+      console.log(`   ✅ Easy Apply available: ${btnInfo.tagName} "${btnInfo.text || btnInfo.ariaLabel}"`);
       
-      // For anchor tags, navigate directly to the href to ensure the apply page opens
-      // LinkedIn's JavaScript click handlers may not work reliably in puppeteer
-      if (btnInfo.tagName === 'A' && btnInfo.href && btnInfo.href.includes('/apply/')) {
-        console.log(`   📍 Navigating to Easy Apply URL: ${btnInfo.href.substring(0, 80)}...`);
-        await this.page.goto(btnInfo.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await randomSleep(2000, 3000);
-      } else {
-        // For button elements, use puppeteer's native click method (more reliable than DOM click)
-        await easyApplyBtn.click();
-        await randomSleep(2000, 3000);
-      }
+      // CRITICAL FIX: Instead of clicking the button (which may go to Premium page on non-Premium accounts),
+      // navigate directly to the Easy Apply URL using the job ID.
+      // This bypasses any Premium upsell interception and goes straight to the application form.
+      // The Easy Apply URL format is: https://www.linkedin.com/jobs/view/{jobId}/apply/?openSDUIApplyFlow=true
+      const easyApplyUrl = `https://www.linkedin.com/jobs/view/${jobId}/apply/?openSDUIApplyFlow=true`;
+      console.log(`   📍 Navigating directly to Easy Apply URL (bypassing button click)`);
+      console.log(`   🔗 URL: ${easyApplyUrl}`);
       
-      await this.debugSnapshot('after_click_easy_apply');
+      await this.page.goto(easyApplyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await randomSleep(2000, 3000);
       
-      // Verify we didn't navigate away
-      const urlAfterClick = this.page.url();
-      if (urlAfterClick.includes('/learning/') || urlAfterClick.includes('/premium/')) {
-        console.log(`⚠️ Clicked wrong button! Ended up at: ${urlAfterClick}`);
-        await this.debugSnapshot('wrong_navigation');
-        // Try to go back
+      await this.debugSnapshot('after_navigate_to_apply');
+      
+      // Verify we didn't get redirected to Premium page
+      const applyPageUrl = this.page.url();
+      if (applyPageUrl.includes('/premium/') || applyPageUrl.includes('/redeem') || 
+          applyPageUrl.includes('/upsell') || applyPageUrl.includes('/learning/')) {
+        console.log(`⚠️ Got redirected to Premium page: ${applyPageUrl}`);
+        await this.debugSnapshot('premium_redirect');
         await this.page.goBack();
         await randomSleep(1000, 2000);
-        return { success: false, reason: 'clicked_wrong_button' };
+        return { success: false, reason: 'premium_redirect' };
       }
       
-      // UPDATED January 2026: Clicking the Easy Apply LINK opens the modal DIRECTLY on the main page
-      // There's NO need to click anything inside an iframe - the /preload/ iframe is just for LinkedIn's internal use
-      console.log(`   Waiting for Easy Apply modal to appear on main page...`);
+      // Note: After navigating to /apply/, LinkedIn may redirect back to /jobs/view/{id}/ with the modal open
+      // So we check if we're on a jobs page (not premium), rather than checking for /apply/ in URL
+      if (!applyPageUrl.includes('/jobs/')) {
+        console.log(`⚠️ Did not land on jobs page, current URL: ${applyPageUrl}`);
+        await this.debugSnapshot('wrong_page_after_navigate');
+        return { success: false, reason: 'wrong_page' };
+      }
+      
+      console.log(`   ✅ On jobs page: ${applyPageUrl}`);
+      console.log(`   Waiting for Easy Apply modal to appear...`);
       
       // Wait for modal to appear - modal opens DIRECTLY on main page after clicking Easy Apply link
       let modalAppeared = await this.waitForEasyApplyModal(8000);
@@ -615,17 +642,14 @@ export class LinkedInBot {
           await randomSleep(1000, 1500);
         }
         
-        // Try clicking Easy Apply button again
-        const easyApplyBtn2 = await this.findEasyApplyButton();
-        if (easyApplyBtn2) {
-          console.log(`   🖱️ Clicking Easy Apply button again...`);
-          await this.page.evaluate(el => el.click(), easyApplyBtn2);
-          await randomSleep(2000, 3000);
-          await this.debugSnapshot('after_second_click');
-          
-          // Wait for modal again
-          modalAppeared = await this.waitForEasyApplyModal(5000);
-        }
+        // Try navigating to apply URL again instead of clicking button
+        console.log(`   🔄 Retrying direct navigation to apply URL...`);
+        await this.page.goto(easyApplyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await randomSleep(2000, 3000);
+        await this.debugSnapshot('after_second_navigation');
+        
+        // Wait for modal again
+        modalAppeared = await this.waitForEasyApplyModal(5000);
         
         if (!modalAppeared) {
           console.log(`❌ Easy Apply modal failed to appear`);
@@ -706,6 +730,76 @@ export class LinkedInBot {
   }
 
   /**
+   * Dismiss any premium promotion overlays that might intercept clicks
+   * LinkedIn shows promotional cards that can overlay the Easy Apply button
+   */
+  async dismissPremiumOverlays() {
+    try {
+      console.log(`   Checking for premium overlays to dismiss...`);
+      
+      // Find and click any "Dismiss" buttons on premium promotions
+      const dismissed = await this.page.evaluate(() => {
+        let dismissedCount = 0;
+        
+        // Look for various dismiss buttons
+        const dismissSelectors = [
+          // Specific premium promotion dismiss buttons
+          'button[class*="dismiss"]',
+          'button[aria-label*="Dismiss"]',
+          'button[aria-label*="dismiss"]',
+          '[class*="upsell"] button[class*="dismiss"]',
+          '[class*="premium"] button[class*="dismiss"]',
+          // Close buttons on overlays
+          '[class*="card-upsell"] button',
+          '[class*="premium-promo"] button[class*="close"]',
+          // Generic close/dismiss on promotions
+          '[class*="promotion"] [class*="dismiss"]',
+          '[class*="promotion"] [class*="close"]'
+        ];
+        
+        for (const selector of dismissSelectors) {
+          const buttons = document.querySelectorAll(selector);
+          for (const btn of buttons) {
+            const text = btn.textContent?.toLowerCase() || '';
+            const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+            const className = btn.className?.toLowerCase() || '';
+            
+            // Check if this is a dismiss/close button for a promotion
+            if (text.includes('dismiss') || ariaLabel.includes('dismiss') || 
+                text.includes('close') || ariaLabel.includes('close') ||
+                className.includes('dismiss') || className.includes('close')) {
+              try {
+                btn.click();
+                dismissedCount++;
+              } catch (e) {
+                // Ignore click errors
+              }
+            }
+          }
+        }
+        
+        // Also try to click away from any overlay by clicking on body
+        // But only if there's an overlay present
+        const overlays = document.querySelectorAll('[class*="upsell"], [class*="promotion"], [class*="premium-card"]');
+        
+        return { dismissed: dismissedCount, overlaysFound: overlays.length };
+      });
+      
+      if (dismissed.dismissed > 0) {
+        console.log(`   ✅ Dismissed ${dismissed.dismissed} premium overlay(s)`);
+        await randomSleep(500, 1000);
+      } else if (dismissed.overlaysFound > 0) {
+        console.log(`   ⚠️ Found ${dismissed.overlaysFound} overlay(s) but couldn't dismiss - trying escape key`);
+        await this.page.keyboard.press('Escape');
+        await randomSleep(300, 500);
+      }
+      
+    } catch (err) {
+      console.log(`   Warning: Could not dismiss overlays: ${err.message}`);
+    }
+  }
+
+  /**
    * Get job description from page
    */
   async getJobDescription() {
@@ -721,26 +815,57 @@ export class LinkedInBot {
 
   /**
    * Find Easy Apply button - improved with strict matching
-   * UPDATED: LinkedIn now uses anchor tags (links) for Easy Apply on job detail pages
+   * UPDATED January 2026: LinkedIn now uses anchor tags (links) for Easy Apply on job detail pages
+   * FIXED: Prioritize link detection and add strict validation to avoid clicking wrong elements
    */
   async findEasyApplyButton() {
     console.log(`   Searching for Easy Apply button...`);
     
-    // Method 1: Look for ANCHOR TAG with "Easy Apply" text (NEW LinkedIn UI - January 2026)
-    // On /jobs/view/ID/ pages, Easy Apply is now an anchor tag with URL containing "/apply/"
+    // PRIORITY 1: Look for ANCHOR TAG with "/apply/" in href - MOST RELIABLE method
+    // On /jobs/view/ID/ pages, Easy Apply is an anchor tag with URL containing "/apply/"
+    // This is the safest because we validate the destination URL
+    try {
+      const applyLinks = await this.page.$$('a[href*="/apply/"]');
+      console.log(`   [DEBUG] Found ${applyLinks.length} links with /apply/ in href`);
+      
+      for (const applyLink of applyLinks) {
+        const linkInfo = await this.page.evaluate(el => ({
+          text: el.textContent?.trim().toLowerCase(),
+          href: el.href,
+          ariaLabel: el.getAttribute('aria-label')?.toLowerCase() || ''
+        }), applyLink);
+        
+        console.log(`   [DEBUG] Checking link: text="${linkInfo.text?.substring(0,30)}", href="${linkInfo.href?.substring(0,60)}"`);
+        
+        // Validate it's actually an Easy Apply link (not some other apply link)
+        if ((linkInfo.text?.includes('easy apply') || linkInfo.ariaLabel?.includes('easy apply')) &&
+            linkInfo.href.includes('/apply/') &&
+            !linkInfo.href.includes('/premium/') &&
+            !linkInfo.href.includes('/learning/')) {
+          console.log(`   Found Easy Apply LINK via href selector (priority method)`);
+          return applyLink;
+        }
+      }
+      console.log(`   [DEBUG] No valid Easy Apply link found in priority 1`);
+    } catch (err) {
+      console.log(`   Priority 1 method failed: ${err.message}`);
+    }
+    
+    // PRIORITY 2: Search all anchor tags for Easy Apply (backup for above)
     const easyApplyLink = await this.page.evaluate(() => {
-      // Look for anchor tags with Easy Apply
       const links = Array.from(document.querySelectorAll('a'));
       for (const link of links) {
         const text = link.textContent?.trim().toLowerCase();
         const href = link.href?.toLowerCase() || '';
         const ariaLabel = link.getAttribute('aria-label')?.toLowerCase() || '';
         
-        // Check if it's the Easy Apply link
-        if ((text?.includes('easy apply') || ariaLabel?.includes('easy apply')) &&
-            href.includes('/apply/') &&
+        // Must have "/apply/" in href AND contain "easy apply" text
+        if (href.includes('/apply/') &&
+            (text?.includes('easy apply') || ariaLabel?.includes('easy apply')) &&
             !text?.includes('premium') && 
-            !text?.includes('learning')) {
+            !text?.includes('learning') &&
+            !href.includes('/premium/') &&
+            !href.includes('/learning/')) {
           return { found: true, type: 'link' };
         }
       }
@@ -748,7 +873,6 @@ export class LinkedInBot {
     });
     
     if (easyApplyLink?.found) {
-      // Get the actual anchor element
       const links = await this.page.$$('a');
       for (const link of links) {
         const info = await this.page.evaluate(el => ({
@@ -757,48 +881,143 @@ export class LinkedInBot {
           ariaLabel: el.getAttribute('aria-label')?.toLowerCase() || ''
         }), link);
         
-        if ((info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) &&
-            info.href.includes('/apply/') &&
+        if (info.href.includes('/apply/') &&
+            (info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) &&
             !info.text?.includes('premium') && 
             !info.text?.includes('learning')) {
-          console.log(`   Found Easy Apply LINK (anchor tag) - new LinkedIn UI`);
+          console.log(`   Found Easy Apply LINK (anchor tag) - search method`);
           return link;
         }
       }
     }
     
-    // Method 2: Look for BUTTON with "Easy Apply" text (search results page or older UI)
+    // PRIORITY 3: Look for BUTTON with "Easy Apply" text (search results page)
+    // IMPORTANT: Only match buttons that have BOTH text AND aria-label containing "easy apply"
+    // This prevents matching Premium upsell buttons that might have aria-label "easy apply"
     const easyApplyByText = await this.page.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
+      
+      // First, find all valid Easy Apply buttons (excluding those in premium context)
+      const validButtons = [];
+      
       for (const btn of buttons) {
         const text = btn.textContent?.trim().toLowerCase();
         const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
         
-        // Must contain "easy apply" and NOT be a premium/learning button
-        if ((text?.includes('easy apply') || ariaLabel?.includes('easy apply')) && 
-            !text?.includes('premium') && 
-            !text?.includes('learning') &&
-            !text?.includes('upgrade')) {
-          return true; // Found it
+        // STRICT: Must have "easy apply" in the actual button TEXT (not just aria-label)
+        // This prevents matching wrong buttons like Premium upsells
+        const hasEasyApplyText = text?.includes('easy apply');
+        const isPremiumOrLearning = text?.includes('premium') || text?.includes('learning') || 
+                                    text?.includes('upgrade') || text?.includes('try premium');
+        
+        // Check parent elements for premium/learning/upsell context (go up multiple levels)
+        let inBadContext = false;
+        let parent = btn.parentElement;
+        for (let i = 0; i < 10 && parent; i++) {
+          const parentClass = parent.className?.toLowerCase() || '';
+          if (parentClass.includes('premium') || parentClass.includes('upsell') || 
+              parentClass.includes('learning') || parentClass.includes('promotion') ||
+              parentClass.includes('card-upsell')) {
+            inBadContext = true;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+        
+        if (hasEasyApplyText && !isPremiumOrLearning && !inBadContext) {
+          // Check if button is inside job details section (not floating header)
+          const isInJobDetails = !!btn.closest('.jobs-unified-top-card, .jobs-details, .job-details, .jobs-search__job-details, [class*="job-details"]');
+          validButtons.push({
+            text,
+            ariaLabel,
+            isInJobDetails,
+            rect: btn.getBoundingClientRect()
+          });
         }
       }
-      return false;
+      
+      // Prefer button in job details section
+      const detailsButton = validButtons.find(b => b.isInJobDetails);
+      if (detailsButton) {
+        return { found: true, text: detailsButton.text, ariaLabel: detailsButton.ariaLabel, preferJobDetails: true };
+      }
+      
+      // Otherwise return first valid button
+      if (validButtons.length > 0) {
+        return { found: true, text: validButtons[0].text, ariaLabel: validButtons[0].ariaLabel, preferJobDetails: false };
+      }
+      
+      return { found: false };
     });
     
-    if (easyApplyByText) {
-      // Get the actual button element
+    if (easyApplyByText?.found) {
       const buttons = await this.page.$$('button');
       for (const btn of buttons) {
-        const info = await this.page.evaluate(el => ({
-          text: el.textContent?.trim().toLowerCase(),
-          ariaLabel: el.getAttribute('aria-label')?.toLowerCase() || ''
-        }), btn);
+        const info = await this.page.evaluate(el => {
+          const text = el.textContent?.trim().toLowerCase();
+          const ariaLabel = el.getAttribute('aria-label')?.toLowerCase() || '';
+          
+          // Check parent context
+          let inBadContext = false;
+          let parent = el.parentElement;
+          for (let i = 0; i < 10 && parent; i++) {
+            const parentClass = parent.className?.toLowerCase() || '';
+            if (parentClass.includes('premium') || parentClass.includes('upsell') || 
+                parentClass.includes('learning') || parentClass.includes('promotion') ||
+                parentClass.includes('card-upsell')) {
+              inBadContext = true;
+              break;
+            }
+            parent = parent.parentElement;
+          }
+          
+          const isInJobDetails = !!el.closest('.jobs-unified-top-card, .jobs-details, .job-details, .jobs-search__job-details, [class*="job-details"]');
+          
+          return { text, ariaLabel, inBadContext, isInJobDetails };
+        }, btn);
         
-        if ((info.text?.includes('easy apply') || info.ariaLabel?.includes('easy apply')) && 
-            !info.text?.includes('premium') && 
-            !info.text?.includes('learning')) {
-          console.log(`   Found Easy Apply BUTTON by text match`);
-          return btn;
+        // STRICT: Only match if text contains "easy apply" (not just aria-label)
+        const hasEasyApplyText = info.text?.includes('easy apply');
+        
+        // Prefer button in job details, or first valid button if none in details
+        if (hasEasyApplyText && !info.inBadContext) {
+          // If we're looking for job details button and this is one, return it
+          if (easyApplyByText.preferJobDetails && info.isInJobDetails) {
+            console.log(`   Found Easy Apply BUTTON in job details section`);
+            return btn;
+          }
+          // If we don't need job details specifically, take first valid
+          if (!easyApplyByText.preferJobDetails) {
+            console.log(`   Found Easy Apply BUTTON by strict text match`);
+            return btn;
+          }
+        }
+      }
+      
+      // Second pass: accept any valid button if we didn't find job details one
+      if (easyApplyByText.preferJobDetails) {
+        for (const btn of buttons) {
+          const info = await this.page.evaluate(el => {
+            const text = el.textContent?.trim().toLowerCase();
+            let inBadContext = false;
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              const parentClass = parent.className?.toLowerCase() || '';
+              if (parentClass.includes('premium') || parentClass.includes('upsell') || 
+                  parentClass.includes('learning') || parentClass.includes('promotion') ||
+                  parentClass.includes('card-upsell')) {
+                inBadContext = true;
+                break;
+              }
+              parent = parent.parentElement;
+            }
+            return { text, inBadContext };
+          }, btn);
+          
+          if (info.text?.includes('easy apply') && !info.inBadContext) {
+            console.log(`   Found Easy Apply BUTTON (fallback)`);
+            return btn;
+          }
         }
       }
     }
@@ -1062,6 +1281,11 @@ export class LinkedInBot {
     const maxSteps = 10;
     let step = 0;
     const jobId = this.applicationData?.jobId;
+    
+    // Track modal state to detect stuck loops
+    let lastModalText = '';
+    let stuckCount = 0;
+    const maxStuckRetries = 3; // Skip job if stuck for 3 consecutive attempts
 
     console.log('📝 Starting Easy Apply modal handler...');
     this.logAction('modal_started', { maxSteps });
@@ -1239,6 +1463,31 @@ export class LinkedInBot {
       });
       console.log(`📋 Modal state: ${modalText}`);
       
+      // Stuck detection: if modal state hasn't changed, increment stuck counter
+      if (modalText === lastModalText) {
+        stuckCount++;
+        console.log(`   ⚠️ Stuck on same page (attempt ${stuckCount}/${maxStuckRetries})`);
+        
+        if (stuckCount >= maxStuckRetries) {
+          // Try to read actual error messages before giving up
+          const errorMessages = await this.page.evaluate(() => {
+            const errors = document.querySelectorAll('.artdeco-inline-feedback--error, [data-test-form-element-error], .fb-form-element-error');
+            return Array.from(errors).map(e => e.textContent?.trim()).filter(Boolean);
+          }).catch(() => []);
+          
+          if (errorMessages.length > 0) {
+            console.log(`   ❌ Form validation errors: ${errorMessages.join(', ')}`);
+          }
+          
+          console.log(`   ❌ Stuck for ${maxStuckRetries} attempts - skipping this job`);
+          await this.closeModal();
+          return false;
+        }
+      } else {
+        stuckCount = 0; // Reset counter on progress
+        lastModalText = modalText;
+      }
+      
       // Log step to job logger
       if (jobId) jobLogger.logStep(jobId, step, maxSteps, modalText);
 
@@ -1247,10 +1496,16 @@ export class LinkedInBot {
         return true;
       }
 
-      // Check for errors
+      // Check for errors and try to fix them
       const hasError = await elementExists(this.page, config.selectors.easyApply.errorMessage);
       if (hasError) {
         console.log('⚠️ Form has errors, attempting to fix...');
+        
+        // If we're stuck with errors, try more aggressive field fixing
+        if (stuckCount > 0) {
+          console.log('   🔧 Attempting aggressive field fix (clearing and re-entering)...');
+          await this.fixFormErrors();
+        }
       }
 
       // Fill any form fields
@@ -1435,6 +1690,116 @@ export class LinkedInBot {
   }
 
   /**
+   * Fix form errors by finding fields with error messages and asking AI for correct values
+   * This is called when we're stuck with validation errors
+   */
+  async fixFormErrors() {
+    const context = await this.getActiveContext();
+    
+    // Find all error messages and their associated form fields
+    const errorFields = await context.evaluate(() => {
+      const errors = [];
+      const errorElements = document.querySelectorAll('.artdeco-inline-feedback--error');
+      
+      for (const error of errorElements) {
+        const errorText = error.textContent?.trim() || '';
+        
+        // Find the associated input field (usually sibling or within same container)
+        const container = error.closest('.fb-form-element, .artdeco-text-input, [data-test-form-element], .fb-dash-form-element');
+        if (container) {
+          const input = container.querySelector('input, textarea, select');
+          const label = container.querySelector('label')?.textContent?.trim() || '';
+          
+          if (input) {
+            errors.push({
+              errorText,
+              label,
+              inputType: input.tagName.toLowerCase(),
+              inputName: input.name || '',
+              currentValue: input.value || '',
+              htmlType: input.type || 'text',
+            });
+          }
+        }
+      }
+      
+      return errors;
+    }).catch(() => []);
+    
+    if (errorFields.length === 0) {
+      console.log('   No error fields found to fix');
+      return;
+    }
+    
+    console.log(`   📋 Found ${errorFields.length} field(s) with errors:`);
+    for (const field of errorFields) {
+      console.log(`      - "${field.label}": ${field.errorText} (current: "${field.currentValue}")`);
+    }
+    
+    // Find and re-fill the error fields with AI assistance
+    const modalSelector = '.jobs-easy-apply-modal, [role="dialog"]:not(:has(.msg-overlay-list-bubble))';
+    const modal = await this.page.$(modalSelector);
+    if (!modal) return;
+    
+    for (const errorField of errorFields) {
+      try {
+        // Ask AI for the correct value based on the error message
+        const aiPrompt = `Field: "${errorField.label}"
+Current value: "${errorField.currentValue}"
+Error message: "${errorField.errorText}"
+Field type: ${errorField.htmlType}
+
+What should the correct value be? Reply with ONLY the value, no explanation.`;
+        
+        console.log(`   🤖 Asking AI to fix: "${errorField.label}" (error: ${errorField.errorText})`);
+        const aiAnswer = await answerQuestion(aiPrompt, null, this.getJobContext());
+        
+        if (aiAnswer && aiAnswer !== errorField.currentValue) {
+          // Find the input field
+          const inputs = await modal.$$('input, textarea');
+          for (const input of inputs) {
+            const inputName = await this.page.evaluate(el => el.name, input);
+            if (inputName === errorField.inputName || !errorField.inputName) {
+              const inputLabel = await this.page.evaluate(el => {
+                const container = el.closest('.fb-form-element, .artdeco-text-input, [data-test-form-element]');
+                return container?.querySelector('label')?.textContent?.trim() || '';
+              }, input);
+              
+              if (inputLabel.includes(errorField.label.substring(0, 20)) || errorField.label.includes(inputLabel.substring(0, 20))) {
+                // Clear and re-enter with AI answer
+                await input.click({ clickCount: 3 });
+                await this.page.keyboard.press('Backspace');
+                await randomSleep(200, 300);
+                await input.type(aiAnswer, { delay: 50 });
+                
+                // Trigger events
+                await this.page.evaluate(el => {
+                  el.dispatchEvent(new Event('input', { bubbles: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  el.dispatchEvent(new Event('blur', { bubbles: true }));
+                }, input);
+                
+                console.log(`   ✅ AI fixed field "${errorField.label}": "${errorField.currentValue}" → "${aiAnswer}"`);
+                
+                // Clear bad cache entry and cache the new answer
+                answerCache.clearCachedAnswer(errorField.label);
+                answerCache.cacheAnswer(errorField.label, aiAnswer, 'ai-fix', 'text');
+                break;
+              }
+            }
+          }
+        } else {
+          console.log(`   ⚠️ AI couldn't provide a different answer for "${errorField.label}"`);
+        }
+      } catch (e) {
+        console.log(`   ⚠️ Could not fix field: ${e.message}`);
+      }
+    }
+    
+    await randomSleep(500, 800);
+  }
+
+  /**
    * Handle text input field with potential autocomplete (like location/city)
    */
   async handleTextInput(input, label) {
@@ -1498,6 +1863,32 @@ export class LinkedInBot {
       this.logFormField('text_input', label, null, 'no_answer');
       if (jobId) jobLogger.logWarning(jobId, `No answer found for: ${label}`);
       return;
+    }
+
+    // Check if this is a numeric field (input type="number" or has numeric validation)
+    const inputType = await this.page.evaluate(el => el.type, input);
+    const isNumericField = inputType === 'number' || 
+                          label.toLowerCase().includes('number') ||
+                          label.toLowerCase().includes('years') ||
+                          label.toLowerCase().includes('months') ||
+                          label.toLowerCase().includes('weeks') ||
+                          label.toLowerCase().includes('days');
+    
+    // Convert text answers to numeric for number fields
+    if (isNumericField) {
+      const lowerAnswer = answer.toLowerCase();
+      if (lowerAnswer === 'immediately' || lowerAnswer === 'now' || lowerAnswer === 'asap') {
+        answer = '0';
+        console.log(`   🔢 Converted text "${lowerAnswer}" to numeric "0" for number field`);
+      } else if (lowerAnswer.includes('week')) {
+        // Extract number from "2 weeks" etc
+        const match = answer.match(/(\d+)/);
+        if (match) answer = match[1];
+      } else if (lowerAnswer.includes('month')) {
+        // Convert months to weeks (rough estimate)
+        const match = answer.match(/(\d+)/);
+        if (match) answer = String(parseInt(match[1]) * 4);
+      }
     }
 
     // Check if this is a location/city field with autocomplete
@@ -1663,12 +2054,34 @@ export class LinkedInBot {
       answerSource = 'ai';
     }
     
+    // Filter out placeholder values - these are NOT valid answers
+    const isPlaceholder = (text) => {
+      if (!text) return true;
+      const lower = text.toLowerCase().trim();
+      return lower.includes('select an option') || 
+             lower.includes('select option') ||
+             lower === 'select' ||
+             lower === '--' ||
+             lower === '-' ||
+             lower === '';
+    };
+    
+    // If answer is a placeholder, clear it and force default selection
+    if (answer && isPlaceholder(answer)) {
+      console.log(`   ⚠️ AI/Cache returned placeholder "${answer}" - will use default`);
+      // Clear bad cache entry
+      answerCache.clearCachedAnswer(label);
+      answer = null;
+    }
+    
     if (answer) {
-      // Find best matching option
+      // Find best matching option (excluding placeholders)
       const matchOption = options.find(o => 
-        o.text.toLowerCase() === answer.toLowerCase() ||
-        o.text.toLowerCase().includes(answer.toLowerCase()) ||
-        answer.toLowerCase().includes(o.text.toLowerCase())
+        !isPlaceholder(o.text) && (
+          o.text.toLowerCase() === answer.toLowerCase() ||
+          o.text.toLowerCase().includes(answer.toLowerCase()) ||
+          answer.toLowerCase().includes(o.text.toLowerCase())
+        )
       );
       
       if (matchOption && matchOption.value) {
@@ -1694,25 +2107,53 @@ export class LinkedInBot {
         }
       } else {
         // If no match, select first non-placeholder option
-        const firstRealOption = options.find(o => o.value && !o.text.toLowerCase().includes('select'));
-        if (firstRealOption) {
-          await select.select(firstRealOption.value);
-          console.log(`   ⚡ Default selected: ${label} = "${firstRealOption.text}"`);
-          this.logFormField('dropdown', label, firstRealOption.text, 'default_selected', optionTexts);
-          
-          // Record to history (but don't cache default selections)
-          answerCache.recordToHistory({
-            question: label,
-            answer: firstRealOption.text,
-            source: 'default',
-            fieldType: 'dropdown',
-            jobId,
-            company: this.applicationData?.company || '',
-            jobTitle: this.applicationData?.title || '',
-            options: optionTexts,
-          });
-        }
+        await this.selectDefaultDropdownOption(select, options, label, answer, answerSource, jobId, optionTexts);
       }
+    } else {
+      // No answer available (AI returned placeholder or no answer) - select default
+      await this.selectDefaultDropdownOption(select, options, label, null, 'default', jobId, optionTexts);
+    }
+  }
+
+  /**
+   * Select the first non-placeholder option in a dropdown
+   */
+  async selectDefaultDropdownOption(select, options, label, attemptedAnswer, answerSource, jobId, optionTexts) {
+    const isPlaceholder = (text) => {
+      if (!text) return true;
+      const lower = text.toLowerCase().trim();
+      return lower.includes('select an option') || 
+             lower.includes('select option') ||
+             lower === 'select' ||
+             lower === '--' ||
+             lower === '-' ||
+             lower === '';
+    };
+    
+    const firstRealOption = options.find(o => o.value && !isPlaceholder(o.text));
+    if (firstRealOption) {
+      await select.select(firstRealOption.value);
+      const reason = attemptedAnswer ? `no match for "${attemptedAnswer}"` : 'no valid answer';
+      console.log(`   ⚡ Default selected: ${label} = "${firstRealOption.text}" (${reason})`);
+      // Clear bad cache entry if we had to default
+      if (answerSource === 'cached') {
+        answerCache.clearCachedAnswer(label);
+      }
+      this.logFormField('dropdown', label, firstRealOption.text, 'default_selected', optionTexts);
+      
+      // Record to history (but don't cache default selections)
+      answerCache.recordToHistory({
+        question: label,
+        answer: firstRealOption.text,
+        source: 'default',
+        fieldType: 'dropdown',
+        jobId,
+        company: this.applicationData?.company || '',
+        jobTitle: this.applicationData?.title || '',
+        options: optionTexts,
+      });
+    } else {
+      console.log(`   ⚠️ No valid options found for: ${label}`);
     }
   }
 
@@ -1851,129 +2292,199 @@ export class LinkedInBot {
     // Find the Easy Apply modal
     const modalSelector = '.jobs-easy-apply-modal, [role="dialog"]:not(:has(.msg-overlay-list-bubble))';
     const modal = await this.page.$(modalSelector);
-    if (!modal) return;
+    if (!modal) {
+      console.log('   ⚠️ No modal found for checkbox handling');
+      return;
+    }
     
-    // Get all checkboxes in the modal
-    const checkboxes = await modal.$$('input[type="checkbox"]');
+    // Get all checkboxes in the modal - try multiple selectors
+    let checkboxes = await modal.$$('input[type="checkbox"]');
+    
+    // Also try finding checkboxes via label elements (LinkedIn sometimes hides the actual input)
+    if (checkboxes.length === 0) {
+      checkboxes = await modal.$$('label input[type="checkbox"], [data-test-text-selectable-option] input');
+    }
+    
     console.log(`   Found ${checkboxes.length} checkbox(es)`);
+    
+    // Also check for consent text on the page and find all unchecked boxes
+    const pageHasConsent = await this.page.evaluate(() => {
+      const text = document.body.innerText?.toLowerCase() || '';
+      return text.includes('i consent') || text.includes('privacy policy') || text.includes('declare');
+    });
+    
+    if (pageHasConsent) {
+      console.log(`   📋 Page contains consent language - will auto-check all consent boxes`);
+    }
     
     for (const checkbox of checkboxes) {
       try {
         const isChecked = await this.page.evaluate(el => el.checked, checkbox);
         const checkboxId = await this.page.evaluate(el => el.id || el.name || 'unnamed', checkbox);
         
-        // Get the label for this checkbox
-        const labelText = await this.page.evaluate(el => {
-          // Try finding associated label
+        // Get the label for this checkbox - try multiple methods
+        const labelInfo = await this.page.evaluate(el => {
+          let labelText = '';
+          
+          // Method 1: Find label by for attribute
           const id = el.id;
           if (id) {
             const label = document.querySelector(`label[for="${id}"]`);
-            if (label) return label.textContent?.trim();
+            if (label) labelText = label.textContent?.trim() || '';
           }
-          // Try parent label
-          const parentLabel = el.closest('label');
-          if (parentLabel) return parentLabel.textContent?.trim();
-          // Try sibling label
-          const siblingLabel = el.parentElement?.querySelector('label');
-          if (siblingLabel) return siblingLabel.textContent?.trim();
-          return '';
+          
+          // Method 2: Parent label
+          if (!labelText) {
+            const parentLabel = el.closest('label');
+            if (parentLabel) labelText = parentLabel.textContent?.trim() || '';
+          }
+          
+          // Method 3: Sibling or nearby text
+          if (!labelText) {
+            const parent = el.parentElement;
+            if (parent) {
+              const siblingLabel = parent.querySelector('label, span, p');
+              if (siblingLabel) labelText = siblingLabel.textContent?.trim() || '';
+            }
+          }
+          
+          // Method 4: Check container for any text
+          if (!labelText) {
+            const container = el.closest('.artdeco-text-input, .fb-form-element, [data-test-form-element], div');
+            if (container) {
+              labelText = container.textContent?.trim()?.substring(0, 200) || '';
+            }
+          }
+          
+          // Also get the full context around the checkbox
+          const fullContext = el.closest('.fb-form-element, [data-test-form-element], .artdeco-text-input, div')?.textContent?.trim()?.substring(0, 300) || '';
+          
+          return { labelText, fullContext };
         }, checkbox);
         
+        const labelText = labelInfo.labelText || labelInfo.fullContext;
         const labelLower = (labelText || '').toLowerCase();
+        const contextLower = (labelInfo.fullContext || '').toLowerCase();
         
-        // Handle "Follow" checkboxes - UNCHECK them if checked (user doesn't want to follow companies)
+        console.log(`   📋 Checkbox: "${labelText?.substring(0, 60) || 'no label'}..." checked=${isChecked}`);
+        
+        // Handle "Follow" checkboxes - UNCHECK them if checked
         if (labelLower.includes('follow') && !labelLower.includes('up')) {
           if (isChecked) {
-            // Uncheck the Follow checkbox
+            await this.page.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), checkbox);
+            await randomSleep(200, 400);
             await this.page.evaluate(el => {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }, checkbox);
-            await randomSleep(200, 400);
-            
-            const unchecked = await this.page.evaluate(el => {
-              try {
-                const id = el.id;
-                if (id) {
-                  const label = document.querySelector(`label[for="${id}"]`);
-                  if (label) {
-                    label.click();
-                    return true;
-                  }
-                }
-                el.click();
-                return true;
-              } catch {
-                return false;
+              const id = el.id;
+              if (id) {
+                const label = document.querySelector(`label[for="${id}"]`);
+                if (label) { label.click(); return; }
               }
+              el.click();
             }, checkbox);
-            
-            if (unchecked) {
-              console.log(`   ❌ Unchecked Follow: "${labelText?.substring(0, 50)}"`);
-              this.logFormField('checkbox', labelText, false, 'unchecked');
-            }
-            await randomSleep(200, 400);
-          } else {
-            console.log(`   ⏭️ Follow already unchecked: "${labelText?.substring(0, 50)}"`);
-            this.logFormField('checkbox', labelText, false, 'already_unchecked');
+            console.log(`   ❌ Unchecked Follow checkbox`);
           }
           continue;
         }
         
         if (!isChecked) {
-          // Use AI to decide whether to check this checkbox
+          // Check if this is a consent/terms checkbox - be very broad
+          const isConsentCheckbox = 
+            labelLower.includes('consent') ||
+            labelLower.includes('i consent') ||
+            labelLower.includes('agree') ||
+            labelLower.includes('terms') ||
+            labelLower.includes('privacy') ||
+            labelLower.includes('gdpr') ||
+            labelLower.includes('data processing') ||
+            labelLower.includes('acknowledge') ||
+            labelLower.includes('confirm') ||
+            labelLower.includes('accept') ||
+            labelLower.includes('policy') ||
+            labelLower.includes('declare') ||
+            labelLower.includes('understand') ||
+            // Also check the full context
+            contextLower.includes('privacy policy') ||
+            contextLower.includes('i consent') ||
+            contextLower.includes('declare that');
+          
           let shouldCheck = false;
           
-          try {
-            const jobContext = this.getJobContext();
-            const aiDecision = await answerCheckboxQuestion(labelText, jobContext);
-            shouldCheck = aiDecision.toLowerCase().trim() === 'true';
-            console.log(`   🤖 AI decision for "${labelText?.substring(0, 40)}...": ${shouldCheck ? 'CHECK' : 'SKIP'}`);
-          } catch (aiError) {
-            console.log(`   ⚠️ AI error, skipping checkbox: ${aiError.message}`);
-            shouldCheck = false;
+          if (isConsentCheckbox) {
+            shouldCheck = true;
+            console.log(`   ✅ Auto-checking consent checkbox: "${labelText?.substring(0, 50)}..."`);
+          } else {
+            // Use AI for non-consent checkboxes
+            try {
+              const jobContext = this.getJobContext();
+              const aiDecision = await answerCheckboxQuestion(labelText, jobContext);
+              shouldCheck = aiDecision.toLowerCase().trim() === 'true';
+              console.log(`   🤖 AI decision for "${labelText?.substring(0, 40)}...": ${shouldCheck ? 'CHECK' : 'SKIP'}`);
+            } catch (aiError) {
+              console.log(`   ⚠️ AI error: ${aiError.message}`);
+              // Default to checking if it looks like a consent box from context
+              if (contextLower.includes('privacy') || contextLower.includes('consent')) {
+                shouldCheck = true;
+                console.log(`   ✅ Defaulting to check (context suggests consent)`);
+              }
+            }
           }
           
           if (!shouldCheck) {
-            console.log(`   ⏭️ Skipping (AI said no): "${labelText?.substring(0, 50)}"`);
-            this.logFormField('checkbox', labelText, false, 'skipped_by_ai');
+            console.log(`   ⏭️ Skipping checkbox`);
             continue;
           }
           
-          // Click the checkbox - using JavaScript click for reliability
-          await this.page.evaluate(el => {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }, checkbox);
-          await randomSleep(200, 400);
+          // Click the checkbox - scroll first, then click
+          await this.page.evaluate(el => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), checkbox);
+          await randomSleep(300, 500);
           
-          // Try clicking the label first (more reliable), then the checkbox
+          // Try multiple click methods
           const clicked = await this.page.evaluate(el => {
             try {
+              // Method 1: Click label
               const id = el.id;
               if (id) {
                 const label = document.querySelector(`label[for="${id}"]`);
                 if (label) {
                   label.click();
-                  return true;
+                  return 'label';
                 }
               }
-              // Click checkbox directly
+              
+              // Method 2: Click parent label
+              const parentLabel = el.closest('label');
+              if (parentLabel) {
+                parentLabel.click();
+                return 'parent-label';
+              }
+              
+              // Method 3: Direct click
               el.click();
-              return true;
-            } catch {
+              return 'direct';
+            } catch (e) {
               return false;
             }
           }, checkbox);
           
-          if (clicked) {
-            const labelPreview = labelText ? labelText.substring(0, 50) : checkboxId;
-            console.log(`   ✅ Checked: "${labelPreview}${labelText?.length > 50 ? '...' : ''}"`);
-            this.logFormField('checkbox', labelText, true, 'checked');
+          // Verify it was checked
+          await randomSleep(200, 300);
+          const nowChecked = await this.page.evaluate(el => el.checked, checkbox);
+          
+          if (nowChecked) {
+            console.log(`   ✅ Checked via ${clicked}: "${labelText?.substring(0, 40)}..."`);
+          } else {
+            // Try forcing the check
+            await this.page.evaluate(el => {
+              el.checked = true;
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }, checkbox);
+            console.log(`   ✅ Force-checked: "${labelText?.substring(0, 40)}..."`);
           }
           
           await randomSleep(200, 400);
         } else {
-          console.log(`   ✓ Already checked: ${(labelText || checkboxId).substring(0, 50)}`);
-          this.logFormField('checkbox', labelText || checkboxId, true, 'already_checked');
+          console.log(`   ✓ Already checked: "${labelText?.substring(0, 40)}..."`);
         }
       } catch (e) {
         console.log(`   ⚠️ Error handling checkbox: ${e.message}`);
@@ -2252,11 +2763,45 @@ export class LinkedInBot {
   
   /**
    * Click a button in the Easy Apply modal by its index
+   * IMPORTANT: Scrolls button into view before clicking
    */
   async clickModalButtonByIndex(idx) {
     // Get the active context (iframe or main page)
     const context = await this.getActiveContext();
     
+    // First, scroll the button into view
+    await context.evaluate((buttonIdx) => {
+      const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
+      for (const dialog of dialogs) {
+        const text = dialog.textContent || '';
+        
+        // Exclude messaging widget
+        if (text.includes('Open Emoji Keyboard') || text.includes('Compose message')) {
+          continue;
+        }
+        
+        const btns = dialog.querySelectorAll('button');
+        const buttonTexts = Array.from(btns).map(b => b.textContent?.trim()?.toLowerCase() || '');
+        const hasDismiss = buttonTexts.some(t => t.includes('dismiss'));
+        const hasEasyApplyButtons = buttonTexts.some(t => 
+          t.includes('next') || t.includes('continue') || t.includes('submit') || t.includes('review') || t.includes('done')
+        );
+        
+        if (hasDismiss || hasEasyApplyButtons) {
+          if (btns[buttonIdx]) {
+            // CRITICAL: Scroll button into view before clicking
+            btns[buttonIdx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return true;
+          }
+        }
+      }
+      return false;
+    }, idx).catch(() => false);
+    
+    // Wait for scroll animation to complete
+    await randomSleep(400, 600);
+    
+    // Now click the button
     return await context.evaluate((buttonIdx) => {
       const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal');
       for (const dialog of dialogs) {
@@ -2338,65 +2883,116 @@ export class LinkedInBot {
       
       // Check context (iframe or main page) for success indicators
       const successCheck = await context.evaluate(() => {
-        const pageText = document.body.innerText?.toLowerCase() || '';
+        // STRICT: Only check within dialogs/modals, not the entire page
+        // This prevents false positives from old text elsewhere on the page
+        const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal, .jobs-easy-apply-modal, [role="alertdialog"]');
         
-        // Check for success phrases
-        const successPhrases = [
-          'application sent',
-          'application submitted', 
-          'your application was sent',
-          'you applied for this job',
-          'application was successfully sent',
-          'successfully applied',
-        ];
-        
-        for (const phrase of successPhrases) {
-          if (pageText.includes(phrase)) {
-            return { success: true, phrase };
+        for (const dialog of dialogs) {
+          const dialogText = dialog.textContent?.toLowerCase() || '';
+          
+          // Skip messaging dialogs
+          if (dialogText.includes('compose message') || dialogText.includes('emoji keyboard')) {
+            continue;
+          }
+          
+          // Check for explicit success phrases WITHIN THE DIALOG
+          const successPhrases = [
+            'application sent',
+            'application submitted', 
+            'your application was sent',
+            'application was successfully sent',
+            'successfully applied',
+          ];
+          
+          for (const phrase of successPhrases) {
+            if (dialogText.includes(phrase)) {
+              // Double-check: look for Done button to confirm it's really a success screen
+              const buttons = dialog.querySelectorAll('button');
+              const buttonTexts = Array.from(buttons).map(b => b.textContent?.trim().toLowerCase() || '');
+              const hasDoneOrDismiss = buttonTexts.some(t => t === 'done' || t === 'dismiss');
+              const hasFormButtons = buttonTexts.some(t => 
+                t.includes('next') || t.includes('submit') || t.includes('review') || t.includes('back')
+              );
+              
+              // Success screen should have Done/Dismiss but NOT any form navigation buttons
+              if (hasDoneOrDismiss && !hasFormButtons) {
+                return { success: true, phrase, confidence: 'high' };
+              }
+              // If we have form buttons, it's NOT success
+              if (hasFormButtons) {
+                continue;
+              }
+              // Medium confidence only if no form buttons
+              return { success: true, phrase, confidence: 'medium' };
+            }
+          }
+          
+          // Also check if there's a "Done" button visible without further form fields
+          const buttons = dialog.querySelectorAll('button');
+          const buttonTexts = Array.from(buttons).map(b => b.textContent?.trim().toLowerCase() || '');
+          const hasDoneBtn = buttonTexts.some(t => t === 'done');
+          const hasFormButtons = buttonTexts.some(t => 
+            t.includes('next') || t.includes('submit') || t.includes('review') || t.includes('back')
+          );
+          
+          // If we have a Done button but no form progression buttons, likely success
+          if (hasDoneBtn && !hasFormButtons && dialogText.includes('application')) {
+            return { success: true, phrase: 'done_button_no_form_buttons', confidence: 'medium' };
           }
         }
         
-        // Also check if there's a "Done" button visible (shows after success)
-        const dialogs = document.querySelectorAll('[role="dialog"], .artdeco-modal');
-        for (const dialog of dialogs) {
-          const dialogText = dialog.textContent?.toLowerCase() || '';
-          if (dialogText.includes('application') && 
-              (dialogText.includes('sent') || dialogText.includes('submitted'))) {
-            // Look for Done button
-            const doneBtn = dialog.querySelector('button');
-            const hasDoneBtn = Array.from(dialog.querySelectorAll('button'))
-              .some(b => b.textContent?.trim().toLowerCase() === 'done');
-            if (hasDoneBtn) {
-              return { success: true, phrase: 'done_button_visible' };
-            }
-          }
+        // ALSO check the URL - if we got redirected to a "post-apply" page
+        if (window.location.href.includes('/post-apply/') || 
+            window.location.href.includes('applied=true')) {
+          return { success: true, phrase: 'url_indicates_success', confidence: 'high' };
         }
         
         return { success: false };
       });
       
       if (successCheck.success) {
-        console.log(`🎉 Application success detected: ${successCheck.phrase}`);
+        console.log(`🎉 Application success detected: ${successCheck.phrase} (confidence: ${successCheck.confidence})`);
         
-        // Try to click "Done" button if present
-        await this.clickButtonBySpanText('Done');
-        await randomSleep(500, 1000);
-        
-        // Close the success modal
-        await this.closeModal();
-        return true;
+        // Only proceed if we're confident
+        if (successCheck.confidence === 'high' || successCheck.confidence === 'medium') {
+          // Try to click "Done" button if present
+          await this.clickButtonBySpanText('Done');
+          await randomSleep(500, 1000);
+          
+          // Close the success modal
+          await this.closeModal();
+          return true;
+        }
       }
       
-      // Legacy check for dismiss button in success context
+      // Legacy check for dismiss button in success context - BE VERY STRICT
       const dismissBtn = await this.page.$('button[aria-label="Dismiss"]');
       if (dismissBtn) {
-        const modalText = await this.page.evaluate(el => {
+        const modalInfo = await this.page.evaluate(el => {
           const modal = el.closest('.artdeco-modal, [role="dialog"]');
-          return modal?.textContent?.toLowerCase() || '';
+          const modalText = modal?.textContent?.toLowerCase() || '';
+          const buttons = modal?.querySelectorAll('button') || [];
+          const buttonTexts = Array.from(buttons).map(b => b.textContent?.trim().toLowerCase() || '');
+          
+          return {
+            modalText,
+            buttonTexts,
+            hasBack: buttonTexts.some(t => t.includes('back')),
+            hasNext: buttonTexts.some(t => t.includes('next')),
+            hasSubmit: buttonTexts.some(t => t.includes('submit')),
+            hasReview: buttonTexts.some(t => t.includes('review')),
+            hasDone: buttonTexts.some(t => t === 'done'),
+          };
         }, dismissBtn);
         
-        if (modalText.includes('application') && 
-            (modalText.includes('sent') || modalText.includes('submitted'))) {
+        // VERY STRICT: Must have success phrase, Done button, AND no form navigation buttons
+        const hasSuccessPhrase = modalInfo.modalText.includes('application sent') || 
+            modalInfo.modalText.includes('application submitted') ||
+            modalInfo.modalText.includes('your application was sent');
+        const hasFormButtons = modalInfo.hasBack || modalInfo.hasNext || modalInfo.hasSubmit || modalInfo.hasReview;
+        
+        // Only consider success if we have explicit success text AND Done button AND no form buttons
+        if (hasSuccessPhrase && modalInfo.hasDone && !hasFormButtons) {
           console.log('🎉 Application success detected via dismiss button context');
           await this.closeModal();
           return true;

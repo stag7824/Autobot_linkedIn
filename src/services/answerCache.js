@@ -302,6 +302,21 @@ export function deleteAnswer(question) {
 }
 
 /**
+ * Clear a bad cached answer (e.g., placeholder values)
+ */
+export function clearCachedAnswer(question) {
+  const normalized = normalizeQuestion(question);
+  if (answerCache.answers[normalized]) {
+    const oldAnswer = answerCache.answers[normalized].answer;
+    delete answerCache.answers[normalized];
+    saveCache();
+    console.log(`   🗑️ Cleared bad cache entry: "${question.substring(0, 40)}..." (was: "${oldAnswer}")`);
+    return true;
+  }
+  return false;
+}
+
+/**
  * Get all cached answers for dashboard
  */
 export function getAllCachedAnswers() {

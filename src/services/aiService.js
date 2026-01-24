@@ -272,12 +272,19 @@ QUESTION: ${question}
 OPTIONS:
 ${options.map((opt, i) => `${i + 1}. ${opt}`).join('\n')}
 
-INSTRUCTIONS:
+CRITICAL RULES - FOLLOW EXACTLY:
+- ALWAYS respond in ENGLISH regardless of what language the question is in.
 - Return ONLY the exact text of the best option, nothing else.
-- Choose the option that best represents the candidate's qualifications.
-- Tailor your answer to match the job requirements if possible.
-- If unsure, choose the most positive/favorable option for the candidate.
-- Do NOT add any explanation or additional text.`;
+
+IMPORTANT FACTS ABOUT THE CANDIDATE:
+- NO non-compete agreement exists - answer "No" to any non-compete questions
+- NEVER worked at Hero, Wolt, foodora, Delivery Hero, Glovo, or ANY food delivery company
+- NEVER worked at the company they are applying to before
+- If asked "Have you worked at [company]?" → Select "No"
+- If asked "Do you have a non-compete?" → Select "No"
+- If asked about previous competitors → The candidate has NOT worked for any competitors
+
+Choose the option that best represents the candidate. Do NOT add any explanation.`;
   } else {
     prompt = `You are an intelligent AI assistant helping fill out a job application form.
 Answer the question concisely based on the candidate's profile and the job they are applying for.
@@ -287,15 +294,24 @@ ${userProfile}
 ${jobContextSection}
 QUESTION: ${question}
 
+CRITICAL RULES - FOLLOW EXACTLY:
+- ALWAYS respond in ENGLISH regardless of what language the question is in.
+
+IMPORTANT FACTS ABOUT THE CANDIDATE (USE THESE FOR ANSWERS):
+- NO non-compete agreement - if asked "Do you have a non-compete?", answer "No"
+- NEVER worked at Hero, Wolt, foodora, Delivery Hero, Glovo, or ANY food delivery company
+- NEVER worked at the company they are applying to before
+- If asked "Have you previously worked at [company]?" → Answer "No"
+- If asked about non-compete agreements → Answer "No" or "None" or "N/A"
+- If asked about previous work at competitors → Answer "No"
+
 INSTRUCTIONS:
 1. If the question asks for **years of experience or a number**, return **only the number** (e.g., "3", "5").
 2. If it's a **Yes/No question**, return **only "Yes" or "No"**.
 3. If it requires a **short answer**, give a **single sentence** relevant to the job.
 4. If it requires a **detailed response** (cover letter, message), keep it under 350 characters and make it relevant to the job.
 5. Do NOT repeat the question in your answer.
-6. Be professional and positive about the candidate's abilities.
-7. Tailor your answer to highlight skills relevant to this specific job.
-8. For visa/authorization questions, answer honestly based on the profile.`;
+6. Be professional and positive about the candidate's abilities.`;
   }
 
   let answer = null;
@@ -357,14 +373,18 @@ ${userInfo.substring(0, 1000)}
 
 Based on the applicant's profile and the checkbox statement, should this checkbox be checked?
 
-IMPORTANT RULES:
-- If the statement asks about legal work authorization and the applicant has it, answer "true"
-- If the statement asks about visa sponsorship need and the applicant DOES need sponsorship, answer "true"
-- If the statement says "I do NOT require sponsorship" and the applicant DOES require sponsorship, answer "false"
-- If it's about agreeing to terms, answer "true"
-- If it's about following the company, answer "false" (user doesn't want to follow)
+IMPORTANT RULES - FOLLOW STRICTLY:
+- If it's about agreeing to terms/conditions/privacy/consent, ALWAYS answer "true"
+- If it's about data processing or GDPR consent, ALWAYS answer "true"
+- If it mentions "I consent", "I agree", "I acknowledge", ALWAYS answer "true"
+- If it's a required consent checkbox, ALWAYS answer "true"
+- If it asks about legal work authorization and the applicant has it, answer "true"
+- If it asks about visa sponsorship need and the applicant DOES need sponsorship, answer "true"
+- If it says "I do NOT require sponsorship" and the applicant DOES require sponsorship, answer "false"
+- If it's about following the company on LinkedIn, answer "false"
+- If it asks about non-compete agreements, the applicant has NONE, so answer accordingly
+- If it asks about previous work at Hero/Wolt/foodora/Delivery Hero, answer "false" (never worked there)
 - For work eligibility questions, be honest based on the profile
-- Only check boxes that truthfully apply to the applicant
 
 Respond with ONLY one word: "true" or "false"`;
 
