@@ -201,9 +201,9 @@ const config = {
     // Gemini (Primary)
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    // OpenRouter (Backup - Mimo model, free tier)
+    // OpenRouter (Backup - free tier)
     openrouterApiKey: process.env.OPENROUTER_API_KEY || process.env.OPENROUTE_API_KEY || '',
-    openrouterModel: process.env.OPENROUTER_MODEL || 'xiaomi/mimo-v2-flash:free',
+    openrouterModel: process.env.OPENROUTER_MODEL,
     enabled: !!(process.env.GEMINI_API_KEY || process.env.OPENROUTER_API_KEY || process.env.OPENROUTE_API_KEY),
     // Gemini Free Tier Rate Limits
     rateLimits: {

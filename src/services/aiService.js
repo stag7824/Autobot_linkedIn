@@ -71,8 +71,9 @@ export async function initializeAI() {
       });
       
       // Test connection with a simple request
+      // using .env OPENROUTER_MODEL
       const stream = await openrouterClient.chat.send({
-        model: 'xiaomi/mimo-v2-flash:free',
+        model: config.ai.openrouterModel,
         messages: [{ role: 'user', content: 'Say "ready"' }],
         stream: true,
         provider: { sort: 'throughput' },
@@ -85,7 +86,7 @@ export async function initializeAI() {
       }
       
       if (response) {
-        console.log('✅ OpenRouter AI initialized (mimo-v2-flash:free)');
+        console.log(`✅ OpenRouter AI initialized (${config.ai.openrouterModel})`);
         openrouterAvailable = true;
         if (!activeProvider) activeProvider = 'openrouter';
       }
