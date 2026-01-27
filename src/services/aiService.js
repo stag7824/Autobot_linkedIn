@@ -293,11 +293,11 @@ INSTRUCTIONS:
 1. If the question asks for **years of experience or a number**, return **only the number** (e.g., "3", "5").
 2. If it's a **Yes/No question**, return **only "Yes" or "No"**.
 3. If it requires a **short answer**, give a **single sentence** relevant to the job.
-4. If it requires a **detailed response** (cover letter, message), keep it under 350 characters and make it relevant to the job.
+4. If it requires a **detailed response** (cover letter, message), keep it under 1000 characters and make it relevant to the job.
 5. Do NOT repeat the question in your answer.
 6. Be professional and positive about the candidate's abilities.
 7. Tailor your answer to highlight skills relevant to this specific job.
-8. For visa/authorization questions, answer honestly based on the profile.`;
+8. For visa/authorization questions, answer honestly based on the profile. I need a work visa for a full-time position.`;
   }
 
   let answer = null;
