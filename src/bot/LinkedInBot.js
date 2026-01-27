@@ -211,6 +211,7 @@ export class LinkedInBot {
     this.browser = await puppeteer.launch({
       headless: config.bot.headless ? 'new' : false,
       executablePath: executablePath,
+      protocolTimeout: config.bot.protocolTimeout || 90000,
       defaultViewport: { width: 1280, height: 900 },
       userDataDir: sessionDir,
       args: [
@@ -252,6 +253,8 @@ export class LinkedInBot {
     });
 
     this.page = await this.browser.newPage();
+    this.page.setDefaultTimeout(config.bot.pageTimeout || 45000);
+    this.page.setDefaultNavigationTimeout(config.bot.navigationTimeout || 45000);
     
     // Set user agent
     await this.page.setUserAgent(
@@ -450,8 +453,9 @@ export class LinkedInBot {
   /**
    * Apply to a job
    */
-  async applyToJob(job) {
+  async applyToJob(job, attempt = 1) {
     const { jobId, title, company, href } = job;
+    const isRetry = attempt > 1;
 
     // Check if already applied
     if (stateManager.hasApplied(jobId)) {
@@ -468,7 +472,11 @@ export class LinkedInBot {
       return { success: false, reason: 'already_applied_linkedin' };
     }
 
-    console.log(`\n📝 Applying to: ${title} at ${company}`);
+    if (isRetry) {
+      console.log(`\n🔁 Retrying application (attempt ${attempt}) for: ${title} at ${company}`);
+    } else {
+      console.log(`\n📝 Applying to: ${title} at ${company}`);
+    }
     console.log(`   Job ID: ${jobId}, URL: ${href}`);
     
     // Store current job context for AI
@@ -477,13 +485,17 @@ export class LinkedInBot {
     
     // Initialize application data tracking
     this.resetApplicationData(jobId, title, company);
-    this.logAction('application_started', { jobId, title, company, href });
+    this.logAction('application_started', { jobId, title, company, href, attempt });
     
     // Initialize job logger for detailed logging
     const fullUrl = `https://www.linkedin.com/jobs/view/${jobId}`;
-    jobLogger.startJobLog(jobId, title, company, fullUrl);
+    if (!isRetry) {
+      jobLogger.startJobLog(jobId, title, company, fullUrl);
+      jobLogger.log(jobId, `Application started`);
+    } else {
+      jobLogger.log(jobId, `Retry after timeout (attempt ${attempt})`);
+    }
     setCurrentJobId(jobId);
-    jobLogger.log(jobId, `Application started`);
 
     try {
       // Navigate to job page - use direct job view URL
@@ -685,6 +697,19 @@ export class LinkedInBot {
         return { success: false, reason: 'application_incomplete' };
       }
     } catch (error) {
+      const isProtocolTimeout = /callfunctionon timed out|protocoltimeout|timeout exceeded/i.test(error.message);
+      if (isProtocolTimeout && attempt < 2) {
+        console.log('⏳ Protocol timeout detected during application. Reloading and retrying once...');
+        await this.debugSnapshot('protocol_timeout_retry');
+        try {
+          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.bot.navigationTimeout || 45000 });
+          await randomSleep(2000, 3000);
+        } catch (reloadErr) {
+          console.log(`⚠️ Reload after timeout failed: ${reloadErr.message}`);
+        }
+        return await this.applyToJob(job, attempt + 1);
+      }
+
       console.error(`❌ Error applying to ${title}:`, error.message);
       
       // Finalize job log with error
@@ -983,7 +1008,7 @@ export class LinkedInBot {
    * @param {number} timeout - Maximum time to wait in ms
    * @returns {Promise<boolean>} Whether the modal appeared
    */
-  async waitForEasyApplyModal(timeout = 8000) {
+  async waitForEasyApplyModal(timeout = config.bot.modalWaitTimeout || 12000) {
     const startTime = Date.now();
     const checkInterval = 500;
     

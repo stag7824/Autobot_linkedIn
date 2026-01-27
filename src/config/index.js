@@ -96,6 +96,11 @@ const config = {
     stealthMode: parseBool(process.env.STEALTH_MODE, true),
     keepScreenAwake: parseBool(process.env.KEEP_SCREEN_AWAKE, true),
     skipResumeUpload: parseBool(process.env.SKIP_RESUME_UPLOAD, true), // LinkedIn already has resume
+    protocolTimeout: parseInt(process.env.PROTOCOL_TIMEOUT, 90000), // Chrome DevTools protocol timeout
+    pageTimeout: parseInt(process.env.PAGE_TIMEOUT, 45000),         // Default page operation timeout
+    navigationTimeout: parseInt(process.env.NAVIGATION_TIMEOUT, 45000),
+    modalWaitTimeout: parseInt(process.env.MODAL_WAIT_TIMEOUT, 12000),
+    stepTimeout: parseInt(process.env.STEP_TIMEOUT, 30000),
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
