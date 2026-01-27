@@ -174,9 +174,10 @@ async function callGemini(prompt) {
 async function callOpenRouter(prompt) {
   if (!openrouterClient) return null;
   
+  // using .env OPENROUTER_MODEL
   try {
     const stream = await openrouterClient.chat.send({
-      model: 'xiaomi/mimo-v2-flash:free',
+      model: config.ai.openrouterModel,
       messages: [{ role: 'user', content: prompt }],
       stream: true,
       streamOptions: { includeUsage: true },
