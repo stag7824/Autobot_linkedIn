@@ -259,6 +259,24 @@ export class LinkedInBot {
 
     console.log('✅ Browser initialized');
     
+    // Auto-close unwanted tabs (LinkedIn Learning, Premium, etc.)
+    this.browser.on('targetcreated', async (target) => {
+      if (target.type() === 'page') {
+        const newPage = await target.page().catch(() => null);
+        if (newPage && newPage !== this.page) {
+          const url = newPage.url();
+          // Close LinkedIn Learning, Premium, and other promotional pages
+          if (url.includes('/learning/') || 
+              url.includes('/premium/') || 
+              url.includes('/sales/') ||
+              url.includes('about:blank')) {
+            console.log(`   🗑️ Auto-closing unwanted tab: ${url.substring(0, 60)}...`);
+            await newPage.close().catch(() => {});
+          }
+        }
+      }
+    });
+    
     // Initialize AI (Gemini + OpenRouter backup)
     await initializeAI();
     
