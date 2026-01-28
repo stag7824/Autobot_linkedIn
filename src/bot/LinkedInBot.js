@@ -8,8 +8,8 @@
 
 import fs from 'fs';
 import path from 'path';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+// Use regular puppeteer - stealth plugin was causing launch timeouts
+import puppeteer from 'puppeteer';
 import config, { buildSearchUrl } from '../config/index.js';
 import stateManager from '../services/stateManager.js';
 import { 
@@ -46,10 +46,8 @@ import {
   formatDuration,
 } from '../utils/helpers.js';
 
-// Enable stealth mode
-if (config.bot.stealthMode) {
-  puppeteer.use(StealthPlugin());
-}
+// Stealth mode disabled - was causing browser launch timeouts
+// Will use manual anti-detection settings in browser launch args instead
 
 /**
  * LinkedIn Easy Apply Bot
@@ -60,6 +58,7 @@ export class LinkedInBot {
     this.page = null;
     this.isLoggedIn = false;
     this.startTime = Date.now();
+    this.consecutiveTimeouts = 0; // Track consecutive protocol timeouts
     this.debugCounter = 0;
     this.currentJobDescription = '';  // Store job description for AI context
     this.currentJobTitle = '';        // Current job title for context
@@ -208,51 +207,43 @@ export class LinkedInBot {
       console.log(`🐳 Docker mode: Using ${executablePath}`);
     }
     
-    this.browser = await puppeteer.launch({
-      headless: config.bot.headless ? 'new' : false,
-      executablePath: executablePath,
-      protocolTimeout: config.bot.protocolTimeout || 90000,
-      defaultViewport: { width: 1280, height: 900 },
-      userDataDir: sessionDir,
+    console.log('🔧 Launching puppeteer...');
+    try {
+      this.browser = await puppeteer.launch({
+        headless: config.bot.headless ? 'new' : false,
+        executablePath: executablePath,
+        protocolTimeout: 180000,
+        timeout: 60000,
+        defaultViewport: { width: 1280, height: 900 },
+        userDataDir: sessionDir,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
         '--window-size=1280,900',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-extensions',
         '--no-first-run',
-        // '--no-zygote',
-        // '--single-process',
         '--disable-background-networking',
-        '--disable-default-apps',
         '--disable-sync',
-        '--disable-translate',
-        '--hide-scrollbars',
         '--mute-audio',
-        '--metrics-recording-only',
-        // Disable crash reporting completely
-        '--disable-breakpad',
-        '--disable-crash-reporter',
-        '--disable-crashpad',
-        '--no-crashpad',
-        // '--crash-dumps-dir=/tmp',
-        '--enable-features=NetworkService,NetworkServiceInProcess',
       ],
-      // Ignore HTTPS errors (for some corporate proxies)
       ignoreHTTPSErrors: true,
-      // Disable crash dumps
-      env: {
-        ...process.env,
-        CHROME_CRASHPAD_DISABLE: '1',
-        DISABLE_CRASHPAD: '1',
-      },
     });
+    console.log('✅ Puppeteer launched successfully');
+    } catch (launchError) {
+      console.error('❌ Puppeteer launch failed:', launchError.message);
+      throw launchError;
+    }
 
     this.page = await this.browser.newPage();
+    
+    // Anti-detection: Override webdriver property
+    await this.page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      // Hide automation indicators
+      delete navigator.__proto__.webdriver;
+    });
+    
     this.page.setDefaultTimeout(config.bot.pageTimeout || 45000);
     this.page.setDefaultNavigationTimeout(config.bot.navigationTimeout || 45000);
     
@@ -272,6 +263,76 @@ export class LinkedInBot {
     await initializeAI();
     
     return this;
+  }
+
+  /**
+   * Recreate browser page when CDP connection becomes unhealthy
+   * This fixes "Runtime.callFunctionOn timed out" errors that persist after protocol timeouts
+   */
+  async recreatePage() {
+    console.log('🔄 Recreating browser page...');
+    
+    try {
+      // Try to close the old page gracefully
+      if (this.page) {
+        try {
+          await this.page.close().catch(() => {});
+        } catch (e) {
+          // Ignore close errors - page may already be dead
+        }
+      }
+      
+      // Create a fresh page
+      this.page = await this.browser.newPage();
+      
+      // Re-apply anti-detection settings
+      await this.page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        delete navigator.__proto__.webdriver;
+      });
+      
+      this.page.setDefaultTimeout(config.bot.pageTimeout || 45000);
+      this.page.setDefaultNavigationTimeout(config.bot.navigationTimeout || 45000);
+      
+      await this.page.setUserAgent(
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      );
+      
+      await this.page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+      });
+      
+      // Navigate to LinkedIn to verify we're still logged in
+      await this.page.goto('https://www.linkedin.com/feed', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+      
+      await randomSleep(2000, 3000);
+      
+      // Check if still logged in
+      if (this.page.url().includes('/feed')) {
+        console.log('✅ Page recreated - still logged in');
+      } else {
+        console.log('⚠️ Page recreated - need to re-login');
+        // Re-login if needed
+        await this.login();
+      }
+      
+      return true;
+    } catch (err) {
+      console.error('❌ Failed to recreate page:', err.message);
+      // As last resort, try to restart the entire browser
+      try {
+        await this.close();
+        await this.init();
+        await this.login();
+        return true;
+      } catch (restartErr) {
+        console.error('❌ Browser restart also failed:', restartErr.message);
+        throw restartErr;
+      }
+    }
   }
 
   /**
@@ -498,6 +559,18 @@ export class LinkedInBot {
     setCurrentJobId(jobId);
 
     try {
+      // Quick health check - if page is unresponsive, recreate it before trying
+      try {
+        await Promise.race([
+          this.page.evaluate(() => document.readyState),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Health check timeout')), 5000))
+        ]);
+      } catch (healthErr) {
+        console.log('⚠️ Page unresponsive, recreating before application...');
+        await this.recreatePage();
+        this.consecutiveTimeouts = 0;
+      }
+
       // Navigate to job page - use direct job view URL
       console.log(`   Navigating to: ${fullUrl}`);
       
@@ -675,6 +748,7 @@ export class LinkedInBot {
           logText, // Detailed logs for Pocketbase
         });
         this.sessionStats.applied++;
+        this.consecutiveTimeouts = 0; // Reset timeout counter on success
         console.log(`✅ Successfully applied to: ${title}`);
         await notifyApplicationSuccess(title, company);
         return { success: true };
@@ -698,16 +772,33 @@ export class LinkedInBot {
       }
     } catch (error) {
       const isProtocolTimeout = /callfunctionon timed out|protocoltimeout|timeout exceeded/i.test(error.message);
-      if (isProtocolTimeout && attempt < 2) {
-        console.log('⏳ Protocol timeout detected during application. Reloading and retrying once...');
-        await this.debugSnapshot('protocol_timeout_retry');
-        try {
-          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.bot.navigationTimeout || 45000 });
-          await randomSleep(2000, 3000);
-        } catch (reloadErr) {
-          console.log(`⚠️ Reload after timeout failed: ${reloadErr.message}`);
+      if (isProtocolTimeout) {
+        this.consecutiveTimeouts++;
+        console.log(`⏳ Protocol timeout detected (consecutive: ${this.consecutiveTimeouts}). Attempting recovery...`);
+        
+        // If we have 2+ consecutive timeouts, recreate the page entirely
+        if (this.consecutiveTimeouts >= 2) {
+          console.log('🔄 Multiple timeouts detected - recreating browser page...');
+          await this.recreatePage();
+          this.consecutiveTimeouts = 0;
+          // Don't retry the same job - move on to prevent infinite loop
+          console.log('⏭️ Skipping this job after page recreation');
+        } else if (attempt < 2) {
+          // First timeout - try simple reload
+          console.log('⏳ Attempting page reload...');
+          await this.debugSnapshot('protocol_timeout_retry');
+          try {
+            await this.page.reload({ waitUntil: 'domcontentloaded', timeout: config.bot.navigationTimeout || 45000 });
+            await randomSleep(2000, 3000);
+            return await this.applyToJob(job, attempt + 1);
+          } catch (reloadErr) {
+            console.log(`⚠️ Reload failed: ${reloadErr.message}`);
+            // Reload failed - recreate page
+            console.log('🔄 Reload failed - recreating browser page...');
+            await this.recreatePage();
+            this.consecutiveTimeouts = 0;
+          }
         }
-        return await this.applyToJob(job, attempt + 1);
       }
 
       console.error(`❌ Error applying to ${title}:`, error.message);
@@ -1098,6 +1189,11 @@ export class LinkedInBot {
       console.log(`   📍 Direct apply page detected - application form is embedded in page`);
     }
 
+    // Track repeated modal states to detect stuck loops
+    let lastModalState = '';
+    let sameStateCount = 0;
+    const maxSameStateRetries = 3;
+
     while (step < maxSteps) {
       step++;
       console.log(`\n--- Step ${step}/${maxSteps} ---`);
@@ -1263,6 +1359,20 @@ export class LinkedInBot {
         return 'Unknown form state';
       });
       console.log(`📋 Modal state: ${modalText}`);
+      
+      // Detect stuck loop: same modal state repeating with errors
+      if (modalText === lastModalState) {
+        sameStateCount++;
+        console.log(`   ⚠️ Same modal state detected (${sameStateCount}/${maxSameStateRetries})`);
+        if (sameStateCount >= maxSameStateRetries) {
+          console.log('❌ Stuck in loop - same modal state repeated too many times. Aborting application.');
+          await this.closeModal();
+          return false;
+        }
+      } else {
+        lastModalState = modalText;
+        sameStateCount = 0;
+      }
       
       // Log step to job logger
       if (jobId) jobLogger.logStep(jobId, step, maxSteps, modalText);
@@ -1602,21 +1712,49 @@ export class LinkedInBot {
    * Handle textarea field
    */
   async handleTextarea(textarea, label) {
-    const currentValue = await this.page.evaluate(el => el.value, textarea);
-    if (currentValue) {
-      console.log(`   ✓ Already filled: ${label}`);
-      this.logFormField('textarea', label, currentValue.substring(0, 100), 'already_filled');
-      return;
-    }
+    try {
+      const currentValue = await this.page.evaluate(el => el.value, textarea);
+      if (currentValue) {
+        console.log(`   ✓ Already filled: ${label}`);
+        this.logFormField('textarea', label, currentValue.substring(0, 100), 'already_filled');
+        return;
+      }
 
-    const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
-    if (answer) {
-      await textarea.click({ clickCount: 3 });
-      await textarea.type(answer, { delay: 30 });
-      console.log(`   ✅ Filled textarea: ${label}`);
-      this.logFormField('textarea', label, answer, 'typed');
-    } else {
-      this.logFormField('textarea', label, null, 'no_answer');
+      const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
+      if (answer) {
+        // Use evaluate to set value directly instead of type() which can timeout on long text
+        // This is much faster and more reliable than character-by-character typing
+        await this.page.evaluate((el, text) => {
+          el.focus();
+          el.value = text;
+          // Trigger input events to notify React/Vue/Angular of the change
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+        }, textarea, answer);
+        
+        // Click outside to trigger blur event
+        await textarea.click();
+        await randomSleep(200, 400);
+        
+        console.log(`   ✅ Filled textarea: ${label}`);
+        this.logFormField('textarea', label, answer, 'typed');
+      } else {
+        this.logFormField('textarea', label, null, 'no_answer');
+      }
+    } catch (e) {
+      console.log(`   ⚠️ Error filling textarea "${label}": ${e.message}`);
+      // Fallback: try keyboard input if evaluate fails
+      try {
+        const answer = getPresetAnswer(label) || await answerQuestion(label, null, this.getJobContext());
+        if (answer) {
+          await textarea.click({ clickCount: 3 });
+          // Use faster typing without delay for fallback
+          await textarea.type(answer.substring(0, 200), { delay: 5 });
+          console.log(`   ✅ Filled textarea (fallback): ${label}`);
+        }
+      } catch (fallbackErr) {
+        console.log(`   ❌ Textarea fallback also failed: ${fallbackErr.message}`);
+      }
     }
   }
 
@@ -2669,6 +2807,8 @@ export class LinkedInBot {
       'SingletonLock',
       'SingletonSocket',
       'SingletonCookie',
+      'DevToolsActivePort',
+      'RunningChromeVersion',
       '.org.chromium.Chromium.lock',
     ];
     
@@ -2684,6 +2824,17 @@ export class LinkedInBot {
       } catch (e) {
         console.log(`   ⚠️ Could not remove ${lockFile}: ${e.message}`);
       }
+    }
+    
+    // Also try to kill any orphaned Chrome processes using this profile
+    try {
+      const { execSync } = require('child_process');
+      // On macOS/Linux, try to find and kill processes using this directory
+      if (process.platform !== 'win32') {
+        execSync(`lsof -t "${sessionDir}" 2>/dev/null | xargs kill -9 2>/dev/null || true`, { stdio: 'ignore' });
+      }
+    } catch (e) {
+      // Ignore errors - process cleanup is best-effort
     }
   }
 

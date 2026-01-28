@@ -92,15 +92,15 @@ const config = {
     pauseBeforeSubmit: parseBool(process.env.PAUSE_BEFORE_SUBMIT, false),
     pauseAtFailedQuestion: parseBool(process.env.PAUSE_AT_FAILED_QUESTION, false),
     followCompanies: parseBool(process.env.FOLLOW_COMPANIES, false),
-    clickGap: parseInt(process.env.CLICK_GAP, 1),
+    clickGap: parseInt(process.env.CLICK_GAP, 10) || 1,
     stealthMode: parseBool(process.env.STEALTH_MODE, true),
     keepScreenAwake: parseBool(process.env.KEEP_SCREEN_AWAKE, true),
     skipResumeUpload: parseBool(process.env.SKIP_RESUME_UPLOAD, true), // LinkedIn already has resume
-    protocolTimeout: parseInt(process.env.PROTOCOL_TIMEOUT, 90000), // Chrome DevTools protocol timeout
-    pageTimeout: parseInt(process.env.PAGE_TIMEOUT, 45000),         // Default page operation timeout
-    navigationTimeout: parseInt(process.env.NAVIGATION_TIMEOUT, 45000),
-    modalWaitTimeout: parseInt(process.env.MODAL_WAIT_TIMEOUT, 12000),
-    stepTimeout: parseInt(process.env.STEP_TIMEOUT, 30000),
+    protocolTimeout: parseInt(process.env.PROTOCOL_TIMEOUT, 10) || 180000, // Chrome DevTools protocol timeout (3 min)
+    pageTimeout: parseInt(process.env.PAGE_TIMEOUT, 10) || 45000,         // Default page operation timeout
+    navigationTimeout: parseInt(process.env.NAVIGATION_TIMEOUT, 10) || 45000,
+    modalWaitTimeout: parseInt(process.env.MODAL_WAIT_TIMEOUT, 10) || 12000,
+    stepTimeout: parseInt(process.env.STEP_TIMEOUT, 10) || 30000,
   },
 
   // ═══════════════════════════════════════════════════════════════════════════
